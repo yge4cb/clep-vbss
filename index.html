@@ -89,9 +89,13 @@ async function doConnect() {
     localStorage.setItem('_cvbid', resolvedBid);
     console.log('CLEP VBSS — Bin ID:', resolvedBid, '(share this with your team)');
 
+    // Set globals before startApp runs so compiled code sees them
+    window.__jbApiKey  = key;
+    window.__jbBinId   = resolvedBid;
+    window.__jbInitial = j.record || {};
     document.getElementById('cfg').style.display = 'none';
     document.getElementById('root').style.display = '';
-    startApp(key, resolvedBid, j.record || {});
+    startApp();
   } catch(e) {
     err.textContent = 'Connection failed: ' + (e.message || String(e));
     err.style.display = 'block';
@@ -109,7 +113,8 @@ window.addEventListener('load', async function() {
   }
 });
 
-function startApp(apiKey, binId, initialData) {
+function startApp() {
+  var apiKey=window.__jbApiKey, binId=window.__jbBinId, initialData=window.__jbInitial||{};
   try {
     // React hooks
     var useState=React.useState, useEffect=React.useEffect, useRef=React.useRef,
@@ -130,15 +135,6 @@ function startApp(apiKey, binId, initialData) {
         FileText=icon('FileText'), Link=icon('Link'), Folder=icon('Folder'),
         FolderOpen=icon('FolderOpen'), Pencil=icon('Pencil'), Check=icon('Check'),
         Settings=icon('Settings'), ArrowRight=icon('ArrowRight'), Circle=icon('Circle');
-
-    // Patch storage globals with connected values
-    // Use window to bypass TDZ for let-declared vars in compiled code
-    window._apiKey = apiKey;
-    window._binId  = binId;
-    window._binData = Object.assign(window._binData || {}, initialData);
-    try{localStorage.setItem("_cvsh",JSON.stringify(window._binData));}catch(e){}
-    if(typeof _startPoll !== "undefined") _startPoll();
-    else if(window._startPoll) window._startPoll();
 
 const PERSONAL_KEY = "clep-vbss-personal-v29";
 const SHARED_KEY = "clep-vbss-shared-v29";
@@ -2888,6 +2884,13 @@ function App() {
   } }), /* @__PURE__ */ React.createElement(TopBar, { page, userName, userAvatar, onChangeName: () => setShowNamePrompt(true) }), /* @__PURE__ */ React.createElement("div", { className: "body-row" }, /* @__PURE__ */ React.createElement(Sidebar, { page, setPage, stats, examName, saveStatus }), /* @__PURE__ */ React.createElement("main", { className: "main" }, !ready ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading your session\u2026") : content)));
 }
 
+
+    // Patch storage vars after compiled code initialized them
+    _apiKey  = apiKey;
+    _binId   = binId;
+    Object.assign(_binData, initialData);
+    try{localStorage.setItem("_cvsh",JSON.stringify(_binData));}catch(e){}
+    _startPoll();
 
     var root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(React.createElement(App));
