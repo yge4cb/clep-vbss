@@ -132,11 +132,13 @@ function startApp(apiKey, binId, initialData) {
         Settings=icon('Settings'), ArrowRight=icon('ArrowRight'), Circle=icon('Circle');
 
     // Patch storage globals with connected values
-    _apiKey = apiKey;
-    _binId  = binId;
-    _binData = Object.assign(_binData, initialData);
-    try{localStorage.setItem("_cvsh",JSON.stringify(_binData));}catch(e){}
-    _startPoll();
+    // Use window to bypass TDZ for let-declared vars in compiled code
+    window._apiKey = apiKey;
+    window._binId  = binId;
+    window._binData = Object.assign(window._binData || {}, initialData);
+    try{localStorage.setItem("_cvsh",JSON.stringify(window._binData));}catch(e){}
+    if(typeof _startPoll !== "undefined") _startPoll();
+    else if(window._startPoll) window._startPoll();
 
 const PERSONAL_KEY = "clep-vbss-personal-v29";
 const SHARED_KEY = "clep-vbss-shared-v29";
@@ -472,7 +474,7 @@ function blankPanelist() {
   TRACKER_BOOL_COLS.forEach((c) => p[c.key] = false);
   return p;
 }
-let _binId = null, _apiKey = null, _binData = {}, _personal = {}, _pollTimer = null, _saving = false;
+var _binId = null, _apiKey = null, _binData = {}, _personal = {}, _pollTimer = null, _saving = false;
 try {
   const p = localStorage.getItem("_cvpe");
   if (p) _personal = JSON.parse(p);
