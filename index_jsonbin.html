@@ -1,0 +1,2902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CLEP VBSS App</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;600;700&family=IBM+Plex+Mono&display=swap"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://unpkg.com/lucide@0.383.0/dist/umd/lucide.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%}
+body{font-family:Arial,system-ui,sans-serif}
+#cfg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,#1A1048,#2D1B69);z-index:9999}
+.cb{background:#fff;border-radius:16px;padding:36px 40px;max-width:500px;width:92%;
+  box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.cb h2{color:#1A1048;font-family:'Roboto Slab',serif;margin-bottom:8px;font-size:22px}
+.cb .sub{color:#64748B;font-size:13px;margin-bottom:22px;line-height:1.5}
+.cb label{display:block;font-size:11px;font-weight:700;color:#475569;
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.cb input{width:100%;padding:10px 13px;border:1px solid #D0C8F0;border-radius:8px;
+  font-size:12.5px;margin-bottom:14px;font-family:'IBM Plex Mono',monospace;color:#1A1048}
+.cb input:focus{outline:none;border-color:#7C3AED}
+.cb button{width:100%;padding:12px;background:#7C3AED;color:#fff;border:none;
+  border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+.cb button:hover{background:#6D28D9}
+.cb button:disabled{background:#A78BFA;cursor:not-allowed}
+#cfg-err{color:#B91C1C;font-size:12px;margin-top:8px;padding:8px 12px;
+  background:#FEF2F2;border-radius:6px;display:none}
+.cb-hint{font-size:11.5px;color:#94A3B8;margin-top:14px;line-height:1.5}
+.cb-hint a{color:#7C3AED;text-decoration:none}
+</style>
+</head>
+<body>
+
+<div id="cfg">
+  <div class="cb">
+    <div style="font-size:28px;margin-bottom:10px">🗂️</div>
+    <h2>CLEP VBSS App</h2>
+    <p class="sub">Enter your JSONBin API key to sync data across your team.
+      Free at <a href="https://jsonbin.io" target="_blank" style="color:#7C3AED">jsonbin.io</a> —
+      no database setup required.</p>
+    <label>JSONBin Master API Key</label>
+    <input id="jb-key" placeholder="$2a$10$…" autocomplete="off" spellcheck="false"/>
+    <div style="font-size:11.5px;color:#64748B;margin-bottom:14px;margin-top:-10px;line-height:1.5">
+      Sign up free → Dashboard → API Keys → copy <b>Master Key</b>
+    </div>
+    <label>Bin ID <span style="font-weight:400;text-transform:none;font-size:11px">(leave blank on first run — created automatically)</span></label>
+    <input id="jb-bin" placeholder="e.g. 64a1b2c3d4e5f6a7b8c9d0e1" autocomplete="off" spellcheck="false"/>
+    <button id="cfg-btn" onclick="doConnect()">Connect &amp; Open App</button>
+    <div id="cfg-err"></div>
+    <p class="cb-hint">
+      After first run, your Bin ID will be saved to your browser and shown in the console.
+      Share your API key + Bin ID with your team so everyone syncs to the same data.
+    </p>
+  </div>
+</div>
+
+<div id="root" style="display:none;height:100%"></div>
+
+<script>
+async function doConnect() {
+  var key = document.getElementById('jb-key').value.trim();
+  var bid = document.getElementById('jb-bin').value.trim();
+  var btn = document.getElementById('cfg-btn');
+  var err = document.getElementById('cfg-err');
+  err.style.display = 'none';
+  if (!key) { err.textContent = 'API key is required.'; err.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Connecting…';
+  try {
+    // Test key by listing bins or creating one
+    var testUrl = 'https://api.jsonbin.io/v3/b';
+    if (bid) testUrl = 'https://api.jsonbin.io/v3/b/' + bid + '/latest';
+    var r = await fetch(testUrl, {method: bid ? 'GET' : 'POST',
+      headers: {'Content-Type':'application/json','X-Master-Key':key,'X-Bin-Private':'false'},
+      body: bid ? undefined : JSON.stringify({_init:true})
+    });
+    if (!r.ok) { var t = await r.text(); throw new Error(r.status + ': ' + t); }
+    var j = await r.json();
+    var resolvedBid = bid || (j.metadata && j.metadata.id);
+    if (!resolvedBid) throw new Error('Could not get Bin ID');
+
+    // Save to localStorage
+    localStorage.setItem('_cvkey', key);
+    localStorage.setItem('_cvbid', resolvedBid);
+    console.log('CLEP VBSS — Bin ID:', resolvedBid, '(share this with your team)');
+
+    document.getElementById('cfg').style.display = 'none';
+    document.getElementById('root').style.display = '';
+    startApp(key, resolvedBid, j.record || {});
+  } catch(e) {
+    err.textContent = 'Connection failed: ' + (e.message || String(e));
+    err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Connect & Open App';
+  }
+}
+
+// Auto-reconnect if credentials saved
+window.addEventListener('load', async function() {
+  var k = localStorage.getItem('_cvkey'), b = localStorage.getItem('_cvbid');
+  if (k && b) {
+    document.getElementById('jb-key').value = k;
+    document.getElementById('jb-bin').value = b;
+    await doConnect();
+  }
+});
+
+function startApp(apiKey, binId, initialData) {
+  try {
+    // React hooks
+    var useState=React.useState, useEffect=React.useEffect, useRef=React.useRef,
+        useMemo=React.useMemo, useCallback=React.useCallback;
+
+    // Lucide icons with fallback
+    function icon(n){return lucide[n]||function(p){return React.createElement('span',
+      {style:{display:'inline-block',width:p.size||16,height:p.size||16}});}}
+    var LayoutDashboard=icon('LayoutDashboard'), ClipboardList=icon('ClipboardList'),
+        CalendarDays=icon('CalendarDays'), CalendarCheck=icon('CalendarCheck'),
+        CalendarClock=icon('CalendarClock'), PackageCheck=icon('PackageCheck'),
+        Table2=icon('Table2'), ShieldCheck=icon('ShieldCheck'), Grid3x3=icon('Grid3x3'),
+        BookOpen=icon('BookOpen'), Plus=icon('Plus'), Trash2=icon('Trash2'),
+        Upload=icon('Upload'), Download=icon('Download'), Undo2=icon('Undo2'),
+        X=icon('X'), Search=icon('Search'), Menu=icon('Menu'), UserPlus=icon('UserPlus'),
+        Columns3=icon('Columns3'), RotateCcw=icon('RotateCcw'),
+        ChevronDown=icon('ChevronDown'), ChevronRight=icon('ChevronRight'),
+        FileText=icon('FileText'), Link=icon('Link'), Folder=icon('Folder'),
+        FolderOpen=icon('FolderOpen'), Pencil=icon('Pencil'), Check=icon('Check'),
+        Settings=icon('Settings'), ArrowRight=icon('ArrowRight'), Circle=icon('Circle');
+
+    // Patch storage globals with connected values
+    _apiKey = apiKey;
+    _binId  = binId;
+    _binData = Object.assign(_binData, initialData);
+    try{localStorage.setItem("_cvsh",JSON.stringify(_binData));}catch(e){}
+    _startPoll();
+
+const PERSONAL_KEY = "clep-vbss-personal-v29";
+const SHARED_KEY = "clep-vbss-shared-v29";
+const CHANGELOG_KEY = "clep-vbss-changelog-v29";
+const COMPLETED_KEY = "clep-vbss-completed-v29";
+const PANELISTS_KEY = "clep-vbss-panelists-v29";
+const DATES_KEY = "clep-vbss-dates-v29";
+const DOCS_KEY = "clep-vbss-docs-v29";
+const USER_KEY = "clep-vbss-username-v29";
+const AVATAR_KEY = "clep-vbss-avatar-v29";
+const CUSTOM_ROLE_PALETTE = ["#0F766E", "#B45309", "#1D4ED8", "#9333EA", "#BE123C", "#4D7C0F", "#0E7490", "#A16207"];
+const DEFAULT_ROLES = [
+  { id: "allstaff", name: "All Staff", abbr: "", color: "#64748B", removable: false, blurb: "Tasks relevant to every team member." },
+  { id: "program", name: "Program", abbr: "", color: "#475569", removable: false, blurb: "Project oversight, panelist recruitment, honoraria." },
+  { id: "pm", name: "Program Manager", abbr: "PM", color: "#0D7490", removable: false, blurb: "Scheduling, coordination, vendor liaison, and stakeholder communication." },
+  { id: "psych", name: "Psychometrician", abbr: "", color: "#3E63DD", removable: false, blurb: "Methodology, form management, data tracking." },
+  { id: "pf", name: "Process Facilitator", abbr: "PF", color: "#2F9E44", removable: false, blurb: "Session facilitation, agenda, group discussions." },
+  { id: "cf", name: "Content Facilitator", abbr: "CF", color: "#E8590C", removable: false, blurb: "Subject-matter expertise, content discussions." },
+  { id: "dqa", name: "Data Quality Analyst", abbr: "DQA", color: "#7048E8", removable: false, blurb: "Zoom management, breakout rooms, data files." },
+  { id: "rs", name: "Research Scientist", abbr: "RS", color: "#C2255C", removable: false, blurb: "Research statistician: statistical analysis, ratings forms, interrater feedback." }
+];
+const PHASES = [
+  { key: "pre", label: "Pre-VBSS", short: "Pre-VBSS", icon: ClipboardList, hasDueDates: true, grouped: true },
+  { key: "d1", label: "Day 1 \u2014 Orientation & Test Preview", short: "Day 1", icon: CalendarDays },
+  { key: "d2", label: "Day 2 \u2014 TSD Development & Round 1 Ratings", short: "Day 2", icon: CalendarClock },
+  { key: "d3", label: "Day 3 \u2014 Round 2 & 3 Ratings & Adjournment", short: "Day 3", icon: CalendarCheck },
+  { key: "post", label: "Post-VBSS", short: "Post-VBSS", icon: PackageCheck, hasDueDates: true }
+];
+const PRE_GROUPS = [
+  { key: "before", label: "Before Kickoff Meeting  \xB7  Kickoff = Dry Run of Day 1 & 2" },
+  { key: "dryrun", label: "Before Dry Run Meeting  \xB7  Dry Run = Day 3 Procedures" },
+  { key: "after", label: "Before Day 1 of VBSS" }
+];
+const DEFAULT_TASKS = {
+  pre: [
+    { id: "pre-01", group: "before", role: "psych", text: "Send ETS judge recruitment criteria" },
+    { id: "pre-02", group: "before", role: "psych", text: "Review judge applications \u2014 Round 1" },
+    { id: "pre-03", group: "before", role: "psych", text: "Review judge applications \u2014 Round 2" },
+    { id: "pre-04", group: "before", role: "psych", text: "Select operational testlet and coordinate transfer to ETS TD" },
+    { id: "pre-05", group: "before", role: "pf", text: "Enter exam name in the VBSS App (Admin \u2192 Settings)" },
+    { id: "pre-06", group: "before", role: "pm", text: "Schedule Kickoff/External Dry Run Meeting with ETS" },
+    { id: "pre-07", group: "before", role: "pm", text: "Schedule Internal Dry Run Meeting" },
+    { id: "pre-08", group: "before", role: "pf", text: "Enter session dates in the VBSS App (Admin \u2192 Settings \u2192 Session Dates)" },
+    { id: "pre-09", group: "before", role: "cf", text: "ETS TD to prepare items in IBIS prior to CB retrieval" },
+    { id: "pre-10", group: "before", role: ["pf", "pm"], text: "Enter Pre-VBSS and Post-VBSS task due dates in the VBSS App (open each task in the Pre-VBSS or Post-VBSS tab and use the Due date field)" },
+    { id: "pre-11", group: "before", role: ["pf", "pm"], text: "Clarify staff role assignments and confirm team availability for all three VBSS days" },
+    { id: "pre-12", group: "before", role: ["pm", "rs"], hasAssignee: true, text: "Enter RS names for task assignments in the VBSS App (open any task tab and fill in the RS field under each task)" },
+    { id: "pre-13", group: "before", role: "program", text: "Retrieve test form and practice questions from IBIS with answer key" },
+    { id: "pre-14", group: "before", role: ["psych", "pf"], text: "Draft VBSS session agenda" },
+    { id: "pre-15", group: "before", role: ["psych", "pf"], text: "Review and QC VBSS session agenda" },
+    { id: "pre-16", group: "before", role: "psych", text: "Create table group sub-content area assignments" },
+    { id: "pre-17", group: "before", role: "rs", hasAssignee: true, text: "Develop MS Evaluation Forms (including Take the Test form)" },
+    { id: "pre-18", group: "before", role: "rs", hasAssignee: true, text: "QC all MS Evaluation Forms" },
+    { id: "pre-19", group: "before", role: "psych", text: "Review MS Evaluation Forms and provide feedback" },
+    { id: "pre-20", group: "before", role: "rs", hasAssignee: true, text: "Revise MS Evaluation Forms per psychometrician feedback" },
+    { id: "pre-21", group: "before", role: "rs", hasAssignee: true, text: "Develop TSD forms (grid format)" },
+    { id: "pre-22", group: "before", role: "rs", hasAssignee: true, text: "QC TSD forms" },
+    { id: "pre-23", group: "before", role: "rs", hasAssignee: true, text: "Develop Round 1 Rating Forms" },
+    { id: "pre-24", group: "before", role: "rs", hasAssignee: true, text: "Add Round 1 Rating Form links to VBSS App" },
+    { id: "pre-25", group: "before", role: "dqa", text: "Prepare Zoom for Kickoff Meeting" },
+    { id: "pre-26", group: "before", role: ["dqa", "pf", "psych", "rs"], hasAssignee: true, text: "Try out Zoom with non-CB emails" },
+    { id: "pre-27", group: "before", role: "pf", text: "Prepare Kickoff Meeting slides (Day 1 & Day 2 procedures)" },
+    { id: "pre-28", group: "before", role: "psych", text: "Approve final MS Evaluation Forms" },
+    { id: "pre-29", group: "before", role: "rs", hasAssignee: true, text: "Add MS Evaluation Form links to VBSS App" },
+    { id: "pre-30", group: "before", role: "pf", text: "Upload agenda to VBSS App" },
+    { id: "pre-31", group: "before", role: "psych", text: "Review and QC Kickoff Meeting slides" },
+    { id: "pre-32", group: "before", role: "cf", text: "ETS TD to finalize both content presentations in PowerPoint" },
+    // ── Before Dry Run Meeting ──────────────────────────────────────────────
+    { id: "pre-pm3", group: "dryrun", role: "pm", text: "Schedule Dry Run Meeting with ETS" },
+    { id: "pre-25", group: "dryrun", role: "psych", text: "Upload Kickoff Meeting slides to VBSS App" },
+    { id: "pre-26", group: "dryrun", role: "psych", text: "Create Slack channel for VBSS coordination" },
+    { id: "pre-27", group: "dryrun", role: "psych", text: "Generate p-value feedback for panels" },
+    { id: "pre-28", group: "dryrun", role: "rs", text: "QC p-value feedback", hasAssignee: true },
+    { id: "pre-29", group: "dryrun", role: "allstaff", text: "Complete dummy data in Take the Test form to verify form logic and familiarize with process" },
+    { id: "pre-30", group: "dryrun", role: "allstaff", text: "Complete dummy data in Day 1 Evaluation Form to verify form logic and familiarize with process" },
+    { id: "pre-31", group: "dryrun", role: "allstaff", text: "Complete dummy data in Round 1 Rating Forms to verify form logic and scoring" },
+    { id: "pre-32", group: "dryrun", role: "rs", text: "Conduct dry-run Round 1 interrater consistency analysis", hasAssignee: true },
+    { id: "pre-33", group: "dryrun", role: "psych", text: "Conduct dry-run Round 1 discrepant items analysis" },
+    { id: "pre-34", group: "dryrun", role: "pf", text: "Review and QC dry-run Round 1 discrepant items output" },
+    { id: "pre-35", group: "dryrun", role: "allstaff", text: "Complete dummy data in Round 1 Evaluation Form to verify form logic" },
+    { id: "pre-36", group: "dryrun", role: "allstaff", text: "Complete dummy data in TSD forms to verify layout and submission" },
+    { id: "pre-37", group: "dryrun", role: "rs", text: "Revise Round 1 Rating Forms if needed", hasAssignee: true },
+    { id: "pre-38", group: "dryrun", role: "rs", text: "Develop Round 2 Rating Forms", hasAssignee: true },
+    { id: "pre-39", group: "dryrun", role: "psych", text: "Prepare Dry Run Meeting slides (Day 3 procedures)" },
+    { id: "pre-40", group: "dryrun", role: "pf", text: "Review and QC Dry Run Meeting slides" },
+    { id: "pre-41", group: "dryrun", role: "psych", text: "Upload Dry Run Meeting slides to VBSS App" },
+    // ── Before Day 1 of VBSS ───────────────────────────────────────────────
+    { id: "pre-42", group: "after", role: "allstaff", text: "Complete dummy data in Round 2 Rating Forms to verify form logic and familiarize with process" },
+    { id: "pre-43", group: "after", role: "allstaff", text: "Complete dummy data in Round 2 Evaluation Forms to verify form logic and familiarize with process" },
+    { id: "pre-44", group: "after", role: "rs", text: "Conduct dry-run Round 2 interrater consistency analysis", hasAssignee: true },
+    { id: "pre-45", group: "after", role: "psych", text: "Conduct dry-run Round 2 impact data analysis" },
+    { id: "pre-46", group: "after", role: "rs", text: "Develop Round 3 Rating Forms", hasAssignee: true },
+    { id: "pre-47", group: "after", role: "allstaff", text: "Complete dummy data in Round 3 Rating Forms to verify form logic and familiarize with process" },
+    { id: "pre-48", group: "after", role: "allstaff", text: "Complete dummy data in Final Evaluation Forms to verify form logic and familiarize with process" },
+    { id: "pre-49", group: "after", role: "rs", text: "Conduct dry-run Round 3 interrater consistency analysis", hasAssignee: true },
+    { id: "pre-50", group: "after", role: "psych", text: "Conduct dry-run Round 3 impact data analysis" },
+    { id: "pre-51", group: "after", role: "rs", text: "Clear all Rating Form dummy responses", hasAssignee: true },
+    { id: "pre-52", group: "after", role: "rs", text: "Clear all MS Evaluation Form dummy responses", hasAssignee: true },
+    { id: "pre-53", group: "after", role: "psych", text: "Share panelist information with DQA for Zoom registration" },
+    { id: "pre-54", group: "after", role: "dqa", text: "Distribute Zoom registration information to panelists" },
+    { id: "pre-55", group: "after", role: "program", text: "Set up WatchDox access for panelists" },
+    { id: "pre-56", group: "after", role: "psych", text: "QC WatchDox materials" },
+    { id: "pre-57", group: "after", role: "program", text: "Apply WatchDox revisions based on QC feedback" },
+    { id: "pre-58", group: "after", role: "psych", text: "Assign panelists to table groups; generate Panelist ID and Panelist Code" },
+    { id: "pre-58b", group: "after", role: "psych", text: "Upload panelist roster to the Attendance & Form Tracker" },
+    { id: "pre-59", group: "after", role: "psych", text: "Share table group assignments with DQA for Zoom breakout room setup" },
+    { id: "pre-60", group: "after", role: "dqa", text: "Configure breakout rooms by table group in Zoom" },
+    { id: "pre-61", group: "after", role: "dqa", text: "Send pre-session reminder email to panelists (include WatchDox instructions)" },
+    { id: "pre-62", group: "after", role: "psych", text: "Prepare Day 1 VBSS slides" },
+    { id: "pre-63", group: "after", role: "pf", text: "Review and QC Day 1 VBSS slides" },
+    { id: "pre-64", group: "after", role: "psych", text: "Upload Day 1 VBSS slides to VBSS App" }
+  ],
+  d1: [
+    { id: "d1-01", role: "allstaff", text: "Append '(staff)' to display name upon joining the Zoom session" },
+    { id: "d1-02", role: "dqa", text: "Grant co-host access to all staff members in Zoom" },
+    { id: "d1-03", role: "dqa", text: "Admit panelists from the Zoom waiting room" },
+    { id: "d1-04", role: "psych", hasNote: true, noteDefault: "Your Panelist ID is TAALG01.", text: "Send Panelist ID to each panelist via private Zoom chat" },
+    { id: "d1-05", role: ["dqa", "psych"], text: "Confirm all panelists are present and connected" },
+    { id: "d1-06", role: "pf", text: "Welcome panelists and conduct roll call" },
+    { id: "d1-07", role: "program", text: "Introduce staff, review session purpose, and provide CLEP program overview" },
+    { id: "d1-08", role: "pf", text: "Facilitate panelist self-introductions" },
+    { id: "d1-09", role: "pf", text: "Overview of the standard setting process" },
+    { id: "d1-10", role: "cf", text: "Deliver test content overview" },
+    { id: "d1-11", role: "psych", text: "Share Take the Test link via Zoom chat" },
+    { id: "d1-12", role: "program", text: "Demonstrate how to complete the Take the Test activity (toggling between WatchDox and MS Form)" },
+    { id: "d1-13", role: "allstaff", text: "Assist panelists with technical issues as needed" },
+    { id: "d1-14", role: "psych", text: "Monitor Take the Test completion status" },
+    { id: "d1-14b", role: "dqa", text: "Update Attendance & Form Tracker \u2014 Take the Test completion" },
+    { id: "d1-15", role: "cf", text: "Review selected items and factors affecting item difficulty" },
+    { id: "d1-16", role: "psych", text: "Share Day 1 Evaluation Form link via Zoom chat" },
+    { id: "d1-17", role: "psych", text: "Monitor Day 1 Evaluation Form completion status" },
+    { id: "d1-17b", role: "dqa", text: "Update Attendance & Form Tracker \u2014 Day 1 attendance and Evaluation Form completion" },
+    { id: "d1-18", role: "pf", text: "Recap session and adjourn" },
+    { id: "d1-19", role: "allstaff", text: "Conduct end-of-day staff debrief and document any technical issues" },
+    { id: "d1-20", role: ["psych", "pf"], text: "Follow up with panelists who did not complete the Day 1 Evaluation Form or submitted incorrect responses" },
+    { id: "d1-21", role: "psych", text: "Review and summarize Day 1 Evaluation Form results; incorporate into Day 2 slides" },
+    { id: "d1-22", role: "pf", text: "Review and QC Day 2 VBSS slides" }
+  ],
+  d2: [
+    { id: "d2-01", role: "allstaff", text: "Append '(staff)' to display name upon joining the Zoom session" },
+    { id: "d2-02", role: "dqa", text: "Grant co-host access to all staff members in Zoom" },
+    { id: "d2-03", role: "dqa", text: "Admit panelists from the Zoom waiting room" },
+    { id: "d2-04", role: ["psych", "dqa"], hasNote: true, noteDefault: "E.g., Your Panelist ID is TAALG01 and Panelist Code is D.", text: "Send Panelist ID and Panelist Code to each panelist via private Zoom chat" },
+    { id: "d2-05", role: ["dqa", "psych"], text: "Confirm all panelists are present, cameras are on, and Panelist IDs are reflected in display names" },
+    { id: "d2-06", role: "pf", text: "Recap Day 1 and review Day 2 agenda" },
+    { id: "d2-07", role: ["pf", "psych"], text: "Introduce the concept of understanding typical student performance" },
+    { id: "d2-08", role: "dqa", text: "Grant co-host access to designated table group scribes for screen sharing in breakout rooms" },
+    { id: "d2-09", role: "dqa", text: "Distribute TSD form to scribes via email (copy PF and Psychometrician)" },
+    { id: "d2-10", role: "dqa", text: "Open breakout rooms for TSD development discussion" },
+    { id: "d2-11", role: ["pf", "cf", "psych", "program"], text: "Circulate among breakout rooms to address panelist questions" },
+    { id: "d2-12", role: "dqa", text: "Close breakout rooms and revoke scribe co-host access" },
+    { id: "d2-13", role: "dqa", text: "Compile TSD submissions from all table groups" },
+    { id: "d2-14", role: "pf", text: "Facilitate whole-group TSD reconciliation discussion" },
+    { id: "d2-15", role: "dqa", text: "Display and edit Round 1 TSDs during whole-group discussion" },
+    { id: "d2-16", role: "psych", text: "Upload finalized Round 1 TSDs to WatchDox" },
+    { id: "d2-17", role: "pf", text: "Deliver training on the standard setting rating method" },
+    { id: "d2-18", role: "psych", text: "Share Practice Rating Form link via Zoom chat" },
+    { id: "d2-19", role: "psych", text: "Share Ready to Proceed Form link via Zoom chat (if applicable)" },
+    { id: "d2-20", role: "psych", text: "Monitor Ready to Proceed Form completion and confirm all panelists are ready" },
+    { id: "d2-22", role: "psych", text: "Share Round 1 Rating Form link via Zoom chat" },
+    { id: "d2-23", role: "pf", text: "Adjourn Day 2 session" },
+    { id: "d2-24", role: ["psych", "pf", "program"], text: "Assist panelists with technical issues as needed (contact by phone if necessary)" },
+    { id: "d2-25", role: "rs", text: "Monitor Round 1 Rating Form completion status", hasAssignee: true },
+    { id: "d2-26", role: ["rs", "dqa"], text: "Verify incoming Round 1 ratings for completeness and accuracy", hasAssignee: true },
+    { id: "d2-27", role: "pf", text: "Monitor Round 1 Evaluation Form completion status" },
+    { id: "d2-27b", role: "dqa", text: "Update Attendance & Form Tracker \u2014 Day 2 attendance, Round 1 Ratings, and Round 1 Evaluation Form completion" },
+    { id: "d2-28", role: "psych", text: "Follow up with panelists who did not complete or submitted incorrect Round 1 Rating or Evaluation Form responses" },
+    { id: "d2-29", role: "allstaff", text: "Conduct end-of-day staff debrief and document any technical issues" },
+    { id: "d2-30", role: "rs", text: "Conduct Round 1 feedback analysis", hasAssignee: true },
+    { id: "d2-31", role: "psych", text: "Compile summary of items with most discrepant ratings" },
+    { id: "d2-32", role: "pf", text: "Review and QC discrepant items summary" },
+    { id: "d2-33", role: "rs", text: "Develop Round 2 Rating Forms and distribute links", hasAssignee: true },
+    { id: "d2-34", role: "rs", text: "QC Round 2 Rating Form links (spot check)", hasAssignee: true },
+    { id: "d2-35", role: "psych", text: "Compile Round 1 intermediate results (interrater consistency feedback; discrepant items) and incorporate into Day 3 slides" },
+    { id: "d2-36", role: "psych", text: "Review and summarize Round 1 Evaluation Form results; incorporate into Day 3 slides" },
+    { id: "d2-37", role: "pf", text: "Review and QC Day 3 VBSS slides" }
+  ],
+  d3: [
+    { id: "d3-01", role: "allstaff", text: "Append '(staff)' to display name upon joining the Zoom session" },
+    { id: "d3-02", role: "dqa", text: "Grant co-host access to all staff members in Zoom" },
+    { id: "d3-03", role: "dqa", text: "Admit panelists from the Zoom waiting room" },
+    { id: "d3-04", role: "pf", text: "Review Day 3 goals and session agenda" },
+    { id: "d3-05", role: ["psych", "dqa"], hasNote: true, noteDefault: "E.g., Your Panelist ID is TAALG01 and Panelist Code is D.", text: "Send Panelist ID and Panelist Code to each panelist via private Zoom chat" },
+    { id: "d3-06", role: ["rs", "dqa"], text: "Confirm all panelists are present, cameras are on, and Panelist IDs are reflected in display names", hasAssignee: true },
+    { id: "d3-07", role: "psych", text: "Present Round 1 feedback to panelists" },
+    { id: "d3-08", role: "dqa", text: "Open breakout rooms for Round 1 feedback discussion" },
+    { id: "d3-09", role: ["pf", "cf", "psych", "program"], text: "Circulate among breakout rooms to address panelist questions" },
+    { id: "d3-09b", role: ["psych", "rs", "pf"], hasNote: true, noteDefault: "Table Group A \u2014 [Staff Name], e.g. Yuan", text: "Share Round 2 Rating Form links via private Zoom chat to assigned table group panelists", hasAssignee: true },
+    { id: "d3-10", role: "dqa", text: "Close breakout rooms" },
+    { id: "d3-11", role: "pf", text: "Facilitate whole-group discussion on items with most discrepant ratings" },
+    { id: "d3-12", role: "pf", text: "Facilitate whole-group Round 2 TSD discussion" },
+    { id: "d3-13", role: "dqa", text: "Display and edit Round 2 TSDs during whole-group discussion" },
+    { id: "d3-14", role: "psych", text: "Upload finalized Round 2 TSDs to WatchDox" },
+    { id: "d3-15", role: "rs", text: "Monitor Round 2 Rating Form completion status", hasAssignee: true },
+    { id: "d3-16", role: "pf", text: "Monitor Round 2 Evaluation Form completion status" },
+    { id: "d3-16b", role: "dqa", text: "Update Attendance & Form Tracker \u2014 Round 2 Ratings and Round 2 Evaluation Form completion" },
+    { id: "d3-17", role: "psych", text: "Follow up with panelists who did not complete or submitted incorrect Round 2 Rating or Evaluation Form responses" },
+    { id: "d3-18", role: "rs", text: "Conduct Round 2 feedback and interrater consistency analysis", hasAssignee: true },
+    { id: "d3-19", role: "rs", text: "Develop Round 3 Rating Forms and distribute links", hasAssignee: true },
+    { id: "d3-20", role: "rs", text: "QC Round 3 Rating Form links (spot check)", hasAssignee: true },
+    { id: "d3-21", role: "psych", text: "Conduct impact data analysis based on Round 2 results" },
+    { id: "d3-22", role: "psych", text: "Compile Round 2 intermediate results (interrater consistency feedback; impact data) and incorporate into Day 3 slides" },
+    { id: "d3-23", role: "pf", text: "Review and summarize Round 2 Evaluation Form results; incorporate into Day 3 slides" },
+    { id: "d3-24", role: "psych", text: "Present Round 2 feedback to panelists" },
+    { id: "d3-25", role: ["pf", "rs", "dqa"], text: "Share Round 3 Rating Form links via private Zoom chat to assigned table group panelists", hasAssignee: true },
+    { id: "d3-26", role: "dqa", text: "Open breakout rooms for Round 2 feedback discussion" },
+    { id: "d3-27", role: ["pf", "cf", "psych", "program"], text: "Circulate among breakout rooms to address panelist questions" },
+    { id: "d3-27b", role: ["pf", "rs", "psych"], hasNote: true, noteDefault: "Table Group A \u2014 [Staff Name], e.g. Yuan", text: "Share Round 3 Rating Form links via private Zoom chat to assigned table group panelists", hasAssignee: true },
+    { id: "d3-28", role: "dqa", text: "Close breakout rooms" },
+    { id: "d3-29", role: "pf", text: "Facilitate whole-group Round 3 TSD discussion" },
+    { id: "d3-30", role: "dqa", text: "Display and edit Round 3 TSDs during whole-group discussion" },
+    { id: "d3-31", role: "psych", text: "Upload finalized Round 3 TSDs to WatchDox" },
+    { id: "d3-32", role: "pf", text: "Adjourn session" },
+    { id: "d3-33", role: "rs", text: "Monitor Round 3 Rating Form completion status", hasAssignee: true },
+    { id: "d3-34", role: "pf", text: "Monitor Final Evaluation Form completion status" },
+    { id: "d3-34b", role: "dqa", text: "Update Attendance & Form Tracker \u2014 Day 3 attendance, Round 3 Ratings, and Final Evaluation Form completion" },
+    { id: "d3-35", role: "psych", text: "Follow up with panelists who did not complete or submitted incorrect Round 3 Rating or Final Evaluation Form responses" },
+    { id: "d3-36", role: "allstaff", text: "Conduct end-of-session staff debrief and document any technical issues" }
+  ],
+  post: [
+    { id: "post-00", role: "pm", text: "Schedule post-VBSS retrospective meeting with full staff" },
+    { id: "post-01", role: ["pm", "program"], text: "Schedule grade setting meeting with committee" },
+    { id: "post-c1", role: "psych", text: "Prepare certificate of recognition template for standard setting panelists" },
+    { id: "post-c2", role: ["pf", "program"], text: "Review and sign certificate of recognition template" },
+    { id: "post-c3", role: "psych", text: "Generate individualized certificates of recognition for all panelists" },
+    { id: "post-c4", role: "program", text: "Distribute certificates of recognition to panelists" },
+    { id: "post-02", role: "rs", text: "Summarize evaluation form results across all rounds", hasAssignee: true },
+    { id: "post-03", role: "rs", text: "Conduct Round 3 feedback analysis", hasAssignee: true },
+    { id: "post-04", role: "psych", text: "Conduct impact data analysis based on Round 3 results" },
+    { id: "post-05", role: "psych", text: "Draft VBSS report" },
+    { id: "post-06", role: ["program", "pf"], text: "Conduct internal review of draft VBSS report" },
+    { id: "post-07", role: "psych", text: "Submit draft VBSS report to ETS for review" },
+    { id: "post-09", role: "cf", text: "ETS TD and committee review of CB-drafted report" },
+    { id: "post-14", role: "allstaff", text: "Conduct post-VBSS retrospective meeting" },
+    { id: "post-14b", role: "pm", text: "Facilitate post-VBSS retrospective meeting" },
+    { id: "post-r1", role: "allstaff", text: "Add items to the retrospective board" },
+    { id: "post-r2", role: "pm", text: "Add retrospective board link to Documents & Links in the VBSS App" },
+    { id: "post-13", role: "psych", text: "Finalize and release VBSS report" },
+    { id: "post-10", role: "psych", text: "Transmit test conversion tables to ETS" },
+    { id: "post-11", role: "psych", text: "Transmit production conversion tables to ETS" },
+    { id: "post-r3", role: "psych", text: "Download VBSS App data record (go to Admin \u2192 Settings \u2192 Export App Data)" },
+    { id: "post-r4", role: "psych", text: "Clear VBSS App data for next session (go to Admin \u2192 Settings \u2192 Clear App Data, then confirm)" }
+  ]
+};
+const RACI_ROLE_ORDER = ["pm", "program", "psych", "pf", "cf", "dqa", "rs"];
+const DEFAULT_RACI = [
+  { id: "raci-15", category: "Session Scheduling & Coordination", raci: { pm: "R", program: "C", psych: "A", pf: "C", cf: "I", dqa: "I", rs: "I" } },
+  { id: "raci-01", category: "Panelist Recruitment", raci: { pm: "I", program: "R", psych: "A", pf: "I", cf: null, dqa: "I", rs: null } },
+  { id: "raci-02", category: "Rating Form Development", raci: { pm: "I", program: "I", psych: "A", pf: "I", cf: null, dqa: "I", rs: "R" } },
+  { id: "raci-03", category: "Evaluation Form Development", raci: { pm: "I", program: "I", psych: "A", pf: "I", cf: null, dqa: "I", rs: "R" } },
+  { id: "raci-04", category: "Presentation Slide Development", raci: { pm: "I", program: "I", psych: "A", pf: "C", cf: "R", dqa: null, rs: "I" } },
+  { id: "raci-05", category: "Zoom Administration", raci: { pm: "I", program: "I", psych: "A", pf: "I", cf: "I", dqa: "R", rs: "I" } },
+  { id: "raci-06", category: "WatchDox Administration", raci: { pm: "I", program: "R", psych: "I", pf: "I", cf: null, dqa: "I", rs: "I" } },
+  { id: "raci-07", category: "Session Facilitation", raci: { pm: "C", program: "C", psych: "A", pf: "R", cf: "C", dqa: "I", rs: null } },
+  { id: "raci-08", category: "Content & Test Overview Delivery", raci: { pm: "I", program: "I", psych: "C", pf: "C", cf: "A", dqa: null, rs: null } },
+  { id: "raci-09", category: "TSD Development", raci: { pm: "I", program: "I", psych: "A", pf: "R", cf: "C", dqa: "R", rs: null } },
+  { id: "raci-10", category: "Ratings Administration (Rounds 1\u20133)", raci: { pm: "I", program: "I", psych: "A", pf: "C", cf: "I", dqa: "R", rs: "R" } },
+  { id: "raci-11", category: "Interrater Consistency Analysis", raci: { pm: "I", program: "I", psych: "A", pf: "C", cf: null, dqa: "I", rs: "R" } },
+  { id: "raci-12", category: "Impact Data Analysis", raci: { pm: "I", program: "I", psych: "A", pf: "I", cf: null, dqa: null, rs: null } },
+  { id: "raci-13", category: "Evaluation Form Collection & Tracking", raci: { pm: "I", program: "I", psych: "A", pf: "C", cf: null, dqa: null, rs: null } },
+  { id: "raci-14", category: "Technical Report Drafting & Review", raci: { pm: "I", program: "C", psych: "A", pf: "C", cf: "C", dqa: null, rs: "C" } },
+  { id: "raci-16", category: "Retrospective Facilitation", raci: { pm: "A", program: "I", psych: "I", pf: "C", cf: null, dqa: null, rs: null } }
+];
+const DEFAULT_GLOSSARY_TERMS = [
+  { id: "g-clep", term: "CLEP", def: "College-Level Examination Program." },
+  { id: "g-vbss", term: "VBSS", def: "Video-Based Standard Setting \u2014 a standard setting session conducted over video conferencing rather than in person." },
+  { id: "g-tsd", term: "TSD", def: "Typical Student Descriptor \u2014 a description of student performance at each level used to anchor panelist judgment." },
+  { id: "g-cs", term: "Cut score", def: "The minimum passing score determined through the standard setting process." },
+  { id: "g-irc", term: "Interrater consistency", def: "The degree of agreement among panelists' ratings across rounds." },
+  { id: "g-wd", term: "WatchDox", def: "The secure document-sharing platform used to distribute session materials to panelists and staff." },
+  { id: "g-raci", term: "RACI", def: "Responsible, Accountable, Consulted, Informed \u2014 a responsibility assignment framework used to clarify task ownership." },
+  { id: "g-pf", term: "PF", def: "Process Facilitator \u2014 leads session facilitation, manages the agenda, and guides group discussions." },
+  { id: "g-cf", term: "CF", def: "Content Facilitator \u2014 provides subject-matter expertise and guides content-related discussions." },
+  { id: "g-dqa", term: "DQA", def: "Data Quality Analyst \u2014 manages Zoom logistics, breakout rooms, and data files." },
+  { id: "g-rs", term: "RS", def: "Research Scientist (Research Statistician) \u2014 conducts statistical analysis, manages rating forms, and provides interrater feedback." }
+];
+const TRACKER_TEXT_COLS = [
+  { key: "name", label: "Panelist Name", alwaysVisible: true },
+  { key: "table", label: "Table" },
+  { key: "panelistId", label: "Panelist ID" },
+  { key: "panelistCode", label: "Panelist Code" },
+  { key: "cellPhone", label: "Cell Phone" }
+];
+const TRACKER_BOOL_COLS = [
+  { key: "day1Attendance", label: "Day 1" },
+  { key: "day2Attendance", label: "Day 2" },
+  { key: "day3Attendance", label: "Day 3" },
+  { key: "takeTheTest", label: "Take Test" },
+  { key: "day1Eval", label: "D1 Eval" },
+  { key: "round1Ratings", label: "R1 Ratings" },
+  { key: "round1Eval", label: "R1 Eval" },
+  { key: "round2Ratings", label: "R2 Ratings" },
+  { key: "round2Eval", label: "R2 Eval" },
+  { key: "round3Ratings", label: "R3 Ratings" },
+  { key: "finalEval", label: "Final Eval" }
+];
+const ALL_TRACKER_COLS = [...TRACKER_TEXT_COLS, ...TRACKER_BOOL_COLS];
+const DOC_CATEGORIES = [
+  { key: "agenda", label: "Agenda", icon: "\u{1F4CB}" },
+  { key: "rating_forms", label: "Rating Forms", icon: "\u{1F4DD}" },
+  { key: "eval_forms", label: "Evaluation Form Links", icon: "\u{1F4CA}" },
+  { key: "slides", label: "Presentation Slides", icon: "\u{1F5A5}\uFE0F" },
+  { key: "data", label: "Data & Analysis", icon: "\u{1F4C8}" },
+  { key: "other", label: "Other", icon: "\u{1F4C1}" }
+];
+const IMPORT_ALIASES = {
+  name: ["fullname", "full name", "name", "panelistname", "panelist"],
+  table: ["table", "tablenumber", "table#", "tablenum"],
+  panelistId: ["panelistid", "id"],
+  panelistCode: ["panelistcode", "code"],
+  state: ["state", "st"],
+  cellPhone: ["cellphone", "cell phone", "phone", "mobile", "cell"]
+};
+function normalizeHeader(h) {
+  return String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function matchColumn(header) {
+  const norm = normalizeHeader(header);
+  for (const field of Object.keys(IMPORT_ALIASES)) {
+    if (IMPORT_ALIASES[field].some((a) => normalizeHeader(a) === norm)) return field;
+  }
+  return null;
+}
+function makeId(p) {
+  return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function todayStamp() {
+  const d = /* @__PURE__ */ new Date(), pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function blankPanelist() {
+  const p = { id: makeId("p"), name: "", table: "", panelistId: "", panelistCode: "", cellPhone: "" };
+  TRACKER_BOOL_COLS.forEach((c) => p[c.key] = false);
+  return p;
+}
+let _binId = null, _apiKey = null, _binData = {}, _personal = {}, _pollTimer = null, _saving = false;
+try {
+  const p = localStorage.getItem("_cvpe");
+  if (p) _personal = JSON.parse(p);
+} catch (e) {
+}
+try {
+  const s = localStorage.getItem("_cvsh");
+  if (s) _binData = JSON.parse(s);
+} catch (e) {
+}
+_binId = localStorage.getItem("_cvbid") || null;
+_apiKey = localStorage.getItem("_cvkey") || null;
+if (_binId && _apiKey) setTimeout(() => _pollBin(), 500);
+async function _jsonbin(method, path, body) {
+  const opts = { method, headers: { "Content-Type": "application/json", "X-Master-Key": _apiKey, "X-Bin-Private": "false" } };
+  if (body !== void 0) opts.body = JSON.stringify(body);
+  const r = await fetch("https://api.jsonbin.io/v3" + path, opts);
+  if (!r.ok) throw new Error("JSONBin " + r.status);
+  return r.json();
+}
+async function _ensureBin() {
+  if (_binId) return;
+  try {
+    const j = await _jsonbin("POST", "/b", { "_init": true });
+    _binId = j.metadata && j.metadata.id;
+    if (_binId) {
+      localStorage.setItem("_cvbid", _binId);
+      console.log("Created bin:", _binId);
+    }
+  } catch (e) {
+    console.error("Create bin failed", e);
+  }
+}
+async function _pollBin() {
+  if (!_binId || !_apiKey || _saving) return;
+  try {
+    const j = await _jsonbin("GET", "/b/" + _binId + "/latest");
+    if (j.record && typeof j.record === "object") {
+      _binData = { ..._binData, ...j.record };
+      try {
+        localStorage.setItem("_cvsh", JSON.stringify(_binData));
+      } catch (e) {
+      }
+    }
+  } catch (e) {
+  }
+}
+function _startPoll() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(_pollBin, 4e3);
+}
+async function storageGet(key, shared) {
+  try {
+    if (shared) return _binData[key] !== void 0 ? _binData[key] : null;
+    return _personal[key] !== void 0 ? _personal[key] : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function storageSet(key, value, shared) {
+  try {
+    if (shared) {
+      _binData[key] = value;
+      try {
+        localStorage.setItem("_cvsh", JSON.stringify(_binData));
+      } catch (e) {
+      }
+      if (_apiKey) {
+        _saving = true;
+        await _ensureBin();
+        try {
+          await _jsonbin("PUT", "/b/" + _binId, _binData);
+        } finally {
+          _saving = false;
+        }
+      }
+    } else {
+      _personal[key] = value;
+      try {
+        localStorage.setItem("_cvpe", JSON.stringify(_personal));
+      } catch (e) {
+      }
+    }
+    return true;
+  } catch (e) {
+    console.error("storageSet", key, e);
+    return false;
+  }
+}
+function safeParse(json, fb) {
+  if (!json) return fb;
+  try {
+    const p = JSON.parse(json);
+    return p && typeof p === "object" ? p : fb;
+  } catch (e) {
+    return fb;
+  }
+}
+function defaultPersonal() {
+  const notes = {};
+  PHASES.forEach((p) => {
+    notes[p.key] = "";
+  });
+  return { notes };
+}
+function defaultShared() {
+  return {
+    roles: DEFAULT_ROLES.map((r) => ({ ...r })),
+    taskAssignments: {},
+    taskTexts: {},
+    taskDueDates: {},
+    taskNotes: {},
+    trackerColumns: Object.fromEntries(ALL_TRACKER_COLS.map((c) => [c.key, true])),
+    raciData: DEFAULT_RACI.map((r) => ({ ...r, raci: { ...r.raci } })),
+    examName: "CLEP",
+    docs: [],
+    examNameNote: "",
+    roleNames: {},
+    glossaryTerms: DEFAULT_GLOSSARY_TERMS.map((t) => ({ ...t }))
+  };
+}
+function slugify(name, existing) {
+  let base = String(name || "role").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "role";
+  let id = base, i = 2;
+  while (existing.includes(id)) {
+    id = `${base}-${i}`;
+    i++;
+  }
+  return id;
+}
+function nextColor(roles) {
+  const used = new Set(roles.map((r) => r.color));
+  return CUSTOM_ROLE_PALETTE.find((c) => !used.has(c)) || CUSTOM_ROLE_PALETTE[roles.length % CUSTOM_ROLE_PALETTE.length];
+}
+function getRole(roles, id) {
+  return roles.find((r) => r.id === id) || null;
+}
+function effectiveRoles(task, assignments) {
+  const ov = assignments[task.id];
+  if (Array.isArray(ov) && ov.length) return ov;
+  if (Array.isArray(task.role)) return task.role;
+  return [task.role];
+}
+function resolveTaskText(task, textOverrides, examName) {
+  const base = textOverrides[task.id] || task.text;
+  return base.replace(/\{EXAM\}/g, examName || "CLEP");
+}
+function RoleBadge({ role, size }) {
+  if (!role) return /* @__PURE__ */ React.createElement("span", { className: "cb cb-muted" }, "Unassigned");
+  const lbl = role.abbr && role.abbr.trim() ? role.abbr : role.name;
+  return /* @__PURE__ */ React.createElement("span", { className: "cb", style: {
+    background: `${role.color}1A`,
+    color: role.color,
+    border: `1px solid ${role.color}44`,
+    fontSize: size === "sm" ? "10.5px" : "12px",
+    padding: size === "sm" ? "1px 7px" : "2px 9px"
+  }, title: role.name }, lbl);
+}
+function RoleFilter({ roles, active, onChange, rsNames = [] }) {
+  const activeArr = Array.isArray(active) ? active : [];
+  const isAll = activeArr.length === 0;
+  const activeRsNames = activeArr.filter((f) => f.startsWith("rs__"));
+  const activeRoles = activeArr.filter((f) => !f.startsWith("rs__"));
+  function toggle(id) {
+    if (activeArr.includes(id)) onChange(activeArr.filter((r) => r !== id));
+    else onChange([...activeArr, id]);
+  }
+  const RS_COLOR = "#C2255C";
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "role-filter-row" }, /* @__PURE__ */ React.createElement("button", { className: `rf-chip ${isAll ? "rf-active" : ""}`, onClick: () => onChange([]) }, "All roles"), roles.filter((r) => r.id !== "allstaff").map((r) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: r.id,
+      className: `rf-chip ${activeRoles.includes(r.id) ? "rf-active" : ""}`,
+      style: activeRoles.includes(r.id) ? { background: `${r.color}22`, color: r.color, borderColor: `${r.color}55` } : {},
+      onClick: () => toggle(r.id)
+    },
+    r.abbr && r.abbr.trim() ? r.abbr : r.name
+  ))), rsNames.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "role-filter-row", style: { paddingLeft: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: "10px", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", alignSelf: "center" } }, "RS \u2192"), rsNames.map(({ name, key }) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key,
+      className: `rf-chip ${activeRsNames.includes(key) ? "rf-active" : ""}`,
+      style: activeRsNames.includes(key) ? { background: `${RS_COLOR}22`, color: RS_COLOR, borderColor: `${RS_COLOR}55` } : { borderStyle: "dashed" },
+      onClick: () => toggle(key)
+    },
+    name
+  ))));
+}
+function ProgressBar({ value, total }) {
+  const pct = total > 0 ? Math.min(100, Math.round(value / total * 100)) : 0;
+  return /* @__PURE__ */ React.createElement("div", { className: "prog-track", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, /* @__PURE__ */ React.createElement("div", { className: "prog-fill", style: { width: `${pct}%` } }));
+}
+function ProgressRing({ value, total, size = 44 }) {
+  const pct = total > 0 ? Math.min(1, value / total) : 0;
+  const r = (size - 6) / 2, c = 2 * Math.PI * r, offset = c * (1 - pct);
+  return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: `0 0 ${size} ${size}` }, /* @__PURE__ */ React.createElement("circle", { cx: size / 2, cy: size / 2, r, fill: "none", stroke: "#E4E7EC", strokeWidth: "4" }), /* @__PURE__ */ React.createElement(
+    "circle",
+    {
+      cx: size / 2,
+      cy: size / 2,
+      r,
+      fill: "none",
+      stroke: "var(--accent)",
+      strokeWidth: "4",
+      strokeDasharray: c,
+      strokeDashoffset: offset,
+      strokeLinecap: "round",
+      transform: `rotate(-90 ${size / 2} ${size / 2})`,
+      style: { transition: "stroke-dashoffset .4s ease" }
+    }
+  ), /* @__PURE__ */ React.createElement("text", { x: "50%", y: "52%", textAnchor: "middle", dominantBaseline: "middle", className: "ring-txt" }, total > 0 ? Math.round(pct * 100) : 0, "%"));
+}
+function Confirm({ open, title, body, confirmLabel, onConfirm, onCancel, danger }) {
+  if (!open) return null;
+  return /* @__PURE__ */ React.createElement("div", { className: "modal-overlay", onClick: onCancel }, /* @__PURE__ */ React.createElement("div", { className: "modal-box", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("h3", { className: "modal-title" }, title), /* @__PURE__ */ React.createElement("p", { className: "modal-body" }, body), /* @__PURE__ */ React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: danger ? "btn btn-danger" : "btn btn-primary", onClick: onConfirm }, confirmLabel || "Confirm"))));
+}
+function UndoToast({ visible, message, onUndo }) {
+  if (!visible) return null;
+  return /* @__PURE__ */ React.createElement("div", { className: "toast" }, /* @__PURE__ */ React.createElement("span", null, message), /* @__PURE__ */ React.createElement("button", { className: "toast-undo", onClick: onUndo }, /* @__PURE__ */ React.createElement(Undo2, { size: 13 }), " Undo"));
+}
+function EmptyState({ icon: Icon, title, body }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "empty-state" }, Icon && /* @__PURE__ */ React.createElement(Icon, { size: 26, strokeWidth: 1.5 }), /* @__PURE__ */ React.createElement("p", { className: "empty-title" }, title), body && /* @__PURE__ */ React.createElement("p", { className: "empty-body" }, body));
+}
+function Collapsible({ title, subtitle, defaultOpen = true, children, badge }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return /* @__PURE__ */ React.createElement("div", { className: "collapsible" }, /* @__PURE__ */ React.createElement("button", { className: "collapsible-hdr", onClick: () => setOpen((v) => !v) }, /* @__PURE__ */ React.createElement("span", { className: "collapsible-chevron" }, open ? /* @__PURE__ */ React.createElement(ChevronDown, { size: 16 }) : /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("span", { className: "collapsible-title" }, title), subtitle && /* @__PURE__ */ React.createElement("span", { className: "collapsible-sub" }, subtitle), badge && /* @__PURE__ */ React.createElement("span", { className: "collapsible-badge" }, badge)), open && /* @__PURE__ */ React.createElement("div", { className: "collapsible-body" }, children));
+}
+function Sidebar({ page, setPage, stats, examName, saveStatus }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const navGroups = [
+    { label: "OVERVIEW", items: [
+      { key: "dashboard", label: "Dashboard", icon: LayoutDashboard }
+    ] },
+    { label: "TASKS", items: PHASES.map((p) => {
+      var _a, _b;
+      return { key: p.key, label: p.short, icon: p.icon, sub: `${((_a = stats[p.key]) == null ? void 0 : _a.done) ?? 0}/${((_b = stats[p.key]) == null ? void 0 : _b.total) ?? 0}` };
+    }) },
+    { label: "TRACKING", items: [
+      { key: "tracker", label: "Attendance & Forms", icon: Table2 },
+      { key: "docs", label: "Documents & Links", icon: FileText },
+      { key: "changelog", label: "Change Log", icon: Circle }
+    ] },
+    { label: "REFERENCE", items: [
+      { key: "processflow", label: "Process Flow", icon: ArrowRight },
+      { key: "raci", label: "RACI Matrix", icon: Grid3x3 },
+      { key: "glossary", label: "Glossary", icon: BookOpen }
+    ] },
+    { label: "ADMIN", items: [
+      { key: "admin", label: "Task & Role Editor", icon: ShieldCheck },
+      { key: "settings", label: "Settings", icon: Settings }
+    ] }
+  ];
+  return /* @__PURE__ */ React.createElement("aside", { className: `sidebar ${collapsed ? "sidebar-sm" : ""}` }, /* @__PURE__ */ React.createElement("div", { className: "sb-topbar" }, !collapsed && /* @__PURE__ */ React.createElement("div", { className: "sb-brand" }, /* @__PURE__ */ React.createElement("div", { className: "sb-brand-row" }, /* @__PURE__ */ React.createElement("span", { className: "sb-clep-word" }, examName || "CLEP"), /* @__PURE__ */ React.createElement("span", { className: "sb-clep-dot" }, "\u2022")), /* @__PURE__ */ React.createElement("div", { className: "sb-brand-sub" }, "College Board \xB7 VBSS App")), collapsed && /* @__PURE__ */ React.createElement("span", { className: "sb-clep-word", style: { fontSize: "13px" } }, (examName || "CLEP").slice(0, 2)), /* @__PURE__ */ React.createElement("button", { className: "sb-collapse-btn", onClick: () => setCollapsed((v) => !v), "aria-label": "Toggle sidebar" }, /* @__PURE__ */ React.createElement(Menu, { size: 15 }))), /* @__PURE__ */ React.createElement("nav", { className: "sb-nav" }, navGroups.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.label, className: "sb-group" }, !collapsed && /* @__PURE__ */ React.createElement("div", { className: "sb-group-label" }, g.label), g.items.map((item) => {
+    const Icon = item.icon;
+    const active = page === item.key;
+    return /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: item.key,
+        className: `sb-item ${active ? "sb-item-active" : ""}`,
+        onClick: () => setPage(item.key),
+        title: collapsed ? item.label : void 0
+      },
+      /* @__PURE__ */ React.createElement(Icon, { size: 16, strokeWidth: active ? 2.2 : 1.7 }),
+      !collapsed && /* @__PURE__ */ React.createElement("span", { className: "sb-item-label" }, item.label),
+      !collapsed && item.sub && /* @__PURE__ */ React.createElement("span", { className: "sb-item-sub" }, item.sub)
+    );
+  })))), !collapsed && /* @__PURE__ */ React.createElement("div", { className: "sb-footer" }, /* @__PURE__ */ React.createElement("span", { className: `save-dot ${saveStatus === "saved" ? "save-ok" : "save-pending"}` }), saveStatus === "saved" ? "Progress saved" : "Saving\u2026", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { className: "sb-footer-link", onClick: () => setPage("tracker") }, "Tip: can link")));
+}
+function TopBar({ page, phases, userName, userAvatar, onChangeName }) {
+  const phase = PHASES.find((p) => p.key === page);
+  const labels = {
+    dashboard: "Dashboard",
+    tracker: "Attendance & Forms",
+    docs: "Documents & Links",
+    processflow: "Process Flow",
+    raci: "RACI Matrix",
+    glossary: "Glossary",
+    admin: "Task & Role Editor",
+    settings: "Settings"
+  };
+  const label = phase ? phase.label : labels[page] || page;
+  return /* @__PURE__ */ React.createElement("div", { className: "topbar" }, /* @__PURE__ */ React.createElement("span", { className: "topbar-title" }, "CLEP VBSS \u2014 ", label), userName && /* @__PURE__ */ React.createElement("button", { className: "topbar-user", onClick: onChangeName, title: "Click to update your profile" }, /* @__PURE__ */ React.createElement(AvatarDisplay, { avatar: userAvatar, size: 22 }), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 4 } }, userName)));
+}
+function ProcessFlowPage({ setPage, sessionDates, stats }) {
+  function fmtDate(d) {
+    if (!d) return null;
+    try {
+      const [y, m, day] = d.split("-");
+      return new Date(Number(y), Number(m) - 1, Number(day)).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    } catch (e) {
+      return d;
+    }
+  }
+  const stages = [
+    {
+      label: "Before Kickoff Meeting",
+      sub: "Pre-VBSS Preparation",
+      page: "pre",
+      dateKey: "kickoff",
+      color: "#7C3AED",
+      activities: ["Select operational testlet; recruit and confirm judges", "Draft and QC all evaluation, rating, and TSD forms", "Prepare VBSS agenda and table group assignments", "Prepare and QC Kickoff Meeting slides"],
+      roles: "Program \xB7 Psychometrician \xB7 PF \xB7 CF \xB7 DQA \xB7 RS",
+      milestone: "Kickoff Meeting slides approved"
+    },
+    {
+      label: "Before Dry Run Meeting",
+      sub: "Dry Run Preparation",
+      page: "pre",
+      dateKey: "dryrun",
+      color: "#4B3AAA",
+      activities: ["Prepare P-value feedback and Day 3 materials", "Staff complete dummy data in all Day 1 & 2 forms", "Conduct dry-run Round 1 analysis (interrater consistency and discrepant ratings)", "Prepare and QC Dry Run Meeting slides"],
+      roles: "Psychometrician \xB7 PF \xB7 DQA \xB7 RS",
+      milestone: "All dummy-data results verified; forms cleared"
+    },
+    {
+      label: "Day 1",
+      sub: "Orientation & Test Preview",
+      page: "d1",
+      dateKey: "day1",
+      color: "#2F9E44",
+      activities: ["Introduce staff, purpose, and CLEP overview", "Deliver content and test overview presentations", "Administer Take the Test activity", "Facilitate item difficulty discussion; collect Day 1 Evaluation Form"],
+      roles: "Program \xB7 Psychometrician \xB7 PF \xB7 CF \xB7 DQA",
+      milestone: "Day 1 Evaluation Form completed by all panelists"
+    },
+    {
+      label: "Day 2",
+      sub: "TSD Development & Round 1 Ratings",
+      page: "d2",
+      dateKey: "day2",
+      color: "#E8590C",
+      activities: ["Facilitate TSD development in breakout rooms", "Conduct whole-group TSD reconciliation", "Administer Round 1 ratings and collect evaluation forms", "Provide interrater consistency feedback and discrepant-items summary"],
+      roles: "Psychometrician \xB7 PF \xB7 CF \xB7 DQA \xB7 RS",
+      milestone: "Round 1 ratings verified; feedback summary prepared"
+    },
+    {
+      label: "Day 3",
+      sub: "Rounds 2 & 3 Ratings & Adjournment",
+      page: "d3",
+      dateKey: "day3",
+      color: "#C2255C",
+      activities: ["Debrief Round 1 feedback; facilitate Round 2 TSD discussion", "Administer Round 2 ratings; present impact data", "Administer Round 3 ratings; present recommended cut score", "Facilitate final panelist discussion and adjourn"],
+      roles: "Psychometrician \xB7 PF \xB7 CF \xB7 DQA \xB7 RS",
+      milestone: "Final cut score recorded; all forms collected"
+    },
+    {
+      label: "Post-VBSS",
+      sub: "Reporting & Closeout",
+      page: "post",
+      dateKey: "gradesetting",
+      color: "#475569",
+      activities: ["Conduct final psychometric analysis across all rating rounds", "Draft and internally review the VBSS technical report", "Submit report to ETS; facilitate grade setting meeting", "Release final report and conversion tables"],
+      roles: "Program \xB7 Psychometrician \xB7 PF \xB7 CF \xB7 RS",
+      milestone: "Final report released by CB"
+    }
+  ];
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Reference"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Process Flow"))), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-grid" }, stages.map((s, i) => {
+    const dateVal = s.dateKey && sessionDates ? sessionDates[s.dateKey] : null;
+    const phaseStats = stats && stats[s.page];
+    const done = (phaseStats == null ? void 0 : phaseStats.done) ?? 0;
+    const total = (phaseStats == null ? void 0 : phaseStats.total) ?? 0;
+    const pct = total > 0 ? Math.round(done / total * 100) : null;
+    return /* @__PURE__ */ React.createElement("div", { key: s.label, className: "flow-pro-card", style: { borderTop: `3px solid ${s.color}` } }, /* @__PURE__ */ React.createElement("div", { className: "flow-pro-head" }, /* @__PURE__ */ React.createElement("span", { className: "flow-pro-num", style: { background: `${s.color}18`, color: s.color } }, String(i + 1).padStart(2, "0")), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-titles" }, /* @__PURE__ */ React.createElement("div", { className: "flow-pro-label" }, s.label), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-sub" }, s.sub)), dateVal && /* @__PURE__ */ React.createElement("div", { className: "flow-pro-date", style: { color: s.color } }, fmtDate(dateVal))), pct !== null && /* @__PURE__ */ React.createElement("div", { className: "flow-pro-prog" }, /* @__PURE__ */ React.createElement("div", { className: "prog-track", style: { height: 4 } }, /* @__PURE__ */ React.createElement("div", { className: "prog-fill", style: { width: `${pct}%`, background: s.color } })), /* @__PURE__ */ React.createElement("span", { className: "flow-pro-pct", style: { color: s.color } }, done, "/", total, " tasks \xB7 ", pct, "%")), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-divider" }), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-section-label" }, "Key Activities"), /* @__PURE__ */ React.createElement("ul", { className: "flow-pro-list" }, s.activities.map((a) => /* @__PURE__ */ React.createElement("li", { key: a }, a))), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-milestone", style: { borderColor: `${s.color}44`, background: `${s.color}09` } }, /* @__PURE__ */ React.createElement("span", { className: "flow-pro-milestone-icon", style: { color: s.color } }, "\u2713"), /* @__PURE__ */ React.createElement("span", null, s.milestone)), /* @__PURE__ */ React.createElement("div", { className: "flow-pro-roles" }, s.roles), /* @__PURE__ */ React.createElement("button", { className: "flow-pro-link", style: { color: s.color }, onClick: () => setPage(s.page) }, "View tasks \u2192"));
+  })));
+}
+function Dashboard({ stats, setPage, panelistCount, roles, examName, sessionDates }) {
+  const totalTasks = PHASES.reduce((s, p) => {
+    var _a;
+    return s + (((_a = stats[p.key]) == null ? void 0 : _a.total) ?? 0);
+  }, 0);
+  const totalDone = PHASES.reduce((s, p) => {
+    var _a;
+    return s + (((_a = stats[p.key]) == null ? void 0 : _a.done) ?? 0);
+  }, 0);
+  const stages = [
+    { label: "Pre-VBSS", sub: "Preparation", page: "pre" },
+    { label: "Day 1", sub: "Orientation", page: "d1" },
+    { label: "Day 2", sub: "TSDs & Round 1", page: "d2" },
+    { label: "Day 3", sub: "Rounds 2 & 3", page: "d3" },
+    { label: "Post-VBSS", sub: "Wrap-up", page: "post" }
+  ];
+  function fmtDate(d) {
+    if (!d) return null;
+    try {
+      const [y, m, day] = d.split("-");
+      const dt = new Date(Number(y), Number(m) - 1, Number(day));
+      return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    } catch (e) {
+      return d;
+    }
+  }
+  const keyDates = [
+    { label: "Kickoff Meeting", key: "kickoff", color: "#7C3AED" },
+    { label: "Dry Run", key: "dryrun", color: "#3E63DD" },
+    { label: "Day 1", key: "day1", color: "#2F9E44" },
+    { label: "Day 2", key: "day2", color: "#E8590C" },
+    { label: "Day 3", key: "day3", color: "#C2255C" },
+    { label: "Grade Setting Mtg", key: "gradesetting", color: "#0D7490" },
+    { label: "Retro Meeting", key: "retro", color: "#4D7C0F" }
+  ];
+  const anyDates = keyDates.some((k) => sessionDates && sessionDates[k.key]);
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Overview"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Dashboard"), /* @__PURE__ */ React.createElement("div", { className: "h1-sub" }, "CLEP Video-Based Standard Setting"))), anyDates && /* @__PURE__ */ React.createElement("div", { className: "card dates-banner" }, /* @__PURE__ */ React.createElement("div", { className: "dates-banner-title" }, "Session Dates"), /* @__PURE__ */ React.createElement("div", { className: "dates-banner-row" }, keyDates.filter((k) => sessionDates && sessionDates[k.key]).map((k) => /* @__PURE__ */ React.createElement("div", { key: k.key, className: "date-pill", style: { borderLeft: `3px solid ${k.color}` } }, /* @__PURE__ */ React.createElement("div", { className: "date-pill-label" }, k.label), /* @__PURE__ */ React.createElement("div", { className: "date-pill-val", style: { color: k.color } }, fmtDate(sessionDates[k.key])))))), !anyDates && /* @__PURE__ */ React.createElement("div", { className: "card dates-banner dates-banner-empty" }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, "No session dates set yet. "), /* @__PURE__ */ React.createElement("button", { className: "btn-inline-link", onClick: () => setPage("settings") }, "Add dates in Settings \u2192")), /* @__PURE__ */ React.createElement("div", { className: "stat-row" }, PHASES.map((p) => {
+    const s = stats[p.key] || { done: 0, total: 0 };
+    return /* @__PURE__ */ React.createElement("button", { key: p.key, className: "stat-card", onClick: () => setPage(p.key) }, /* @__PURE__ */ React.createElement("div", { className: "stat-label" }, p.short), /* @__PURE__ */ React.createElement("div", { className: "stat-val" }, s.done, "/", s.total), /* @__PURE__ */ React.createElement(ProgressBar, { value: s.done, total: s.total }));
+  }), /* @__PURE__ */ React.createElement("div", { className: "stat-card" }, /* @__PURE__ */ React.createElement("div", { className: "stat-label" }, "Panelists"), /* @__PURE__ */ React.createElement("div", { className: "stat-val" }, panelistCount))), /* @__PURE__ */ React.createElement("div", { className: "dash-flow" }, stages.map((s, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: s.label }, /* @__PURE__ */ React.createElement("button", { className: "dash-flow-btn", onClick: () => setPage(s.page) }, /* @__PURE__ */ React.createElement("div", { className: "dash-flow-label" }, s.label), /* @__PURE__ */ React.createElement("div", { className: "dash-flow-sub" }, s.sub)), i < stages.length - 1 && /* @__PURE__ */ React.createElement(ArrowRight, { size: 16, className: "dash-arrow" })))), /* @__PURE__ */ React.createElement("div", { className: "quicklinks" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setPage("pre") }, /* @__PURE__ */ React.createElement(ClipboardList, { size: 14 }), " Pre-VBSS"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setPage("tracker") }, /* @__PURE__ */ React.createElement(Table2, { size: 14 }), " Tracker"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setPage("docs") }, /* @__PURE__ */ React.createElement(FileText, { size: 14 }), " Docs & Links"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setPage("raci") }, /* @__PURE__ */ React.createElement(Grid3x3, { size: 14 }), " RACI Matrix"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setPage("glossary") }, /* @__PURE__ */ React.createElement(BookOpen, { size: 14 }), " Glossary")));
+}
+const PHASE_DATE_KEYS = { d1: "day1", d2: "day2", d3: "day3", post: "gradesetting" };
+const PHASE_DATE_LABELS = { d1: "Day 1", d2: "Day 2", d3: "Day 3", post: "Committee Meeting" };
+const PHASE_DATE_COLORS = { d1: "#2F9E44", d2: "#E8590C", d3: "#C2255C", post: "#0D7490" };
+const PRE_GROUP_DATE_INFO = {
+  before: { label: "Kickoff Meeting", dateKey: "kickoff", color: "#7C3AED" },
+  kickoff: { label: "Kickoff Meeting", dateKey: "kickoff", color: "#7C3AED" },
+  dryrun: { label: "Dry Run Meeting", dateKey: "dryrun", color: "#3E63DD" },
+  dryrun2: { label: "Dry Run Meeting", dateKey: "dryrun", color: "#3E63DD" },
+  after: { label: "Day 1 of VBSS", dateKey: "day1", color: "#2F9E44" }
+};
+function fmtFull(d) {
+  if (!d) return "";
+  try {
+    const [y, m, day] = d.split("-");
+    return new Date(Number(y), Number(m) - 1, Number(day)).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  } catch (e) {
+    return d;
+  }
+}
+function PhaseDateBadge({ dateStr, label, color }) {
+  if (!dateStr) return null;
+  return /* @__PURE__ */ React.createElement("div", { className: "phase-date-badge", style: { borderColor: color || "var(--accent)" } }, /* @__PURE__ */ React.createElement("span", { className: "phase-date-icon" }, "\u{1F4C5}"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "phase-date-label" }, label), /* @__PURE__ */ React.createElement("div", { className: "phase-date-val", style: { color: color || "var(--accent)" } }, fmtFull(dateStr))));
+}
+function TaskPhasePage({ phase, roles, taskAssignments, taskTexts, taskDueDates, onDueDateChange, examName, completedMap, notes, onToggleTask, onNotesChange, sessionDates, taskNotes, onTaskNoteChange, roleFilter, setRoleFilter, rsNames }) {
+  const tasks = DEFAULT_TASKS[phase.key];
+  const sd = sessionDates || {};
+  const matchesFilter = useCallback((task) => {
+    if (roleFilter.length === 0) return true;
+    const activeRoles = roleFilter.filter((f) => !f.startsWith("rs__"));
+    const activeRsNames = roleFilter.filter((f) => f.startsWith("rs__"));
+    const rr = effectiveRoles(task, taskAssignments);
+    const roleMatch = activeRoles.length === 0 || rr.includes("allstaff") || activeRoles.some((f) => rr.includes(f));
+    if (activeRsNames.length === 0) return roleMatch;
+    if (!task.hasAssignee || !rr.includes("rs")) {
+      if (activeRoles.length === 0) return false;
+      return roleMatch;
+    }
+    const assignee = taskNotes && taskNotes[task.id + "__assignee"] || "";
+    const assigneeNames = assignee.split(/[,;]/).map((n) => n.trim().toLowerCase().replace(/\s+/g, "_"));
+    const nameMatch = activeRsNames.some((key) => {
+      const namePart = key.replace("rs__", "");
+      return assigneeNames.includes(namePart);
+    });
+    return nameMatch;
+  }, [taskAssignments, roleFilter, taskNotes]);
+  const visibleTasks = useMemo(() => tasks.filter(matchesFilter), [tasks, matchesFilter]);
+  const doneCount = tasks.filter((t) => completedMap[t.id]).length;
+  const phaseDateKey = PHASE_DATE_KEYS[phase.key];
+  const phaseDateVal = phaseDateKey ? sd[phaseDateKey] : "";
+  const phaseDateColor = PHASE_DATE_COLORS[phase.key] || "var(--accent)";
+  function renderRow(task) {
+    const roleIds = effectiveRoles(task, taskAssignments);
+    const done = !!completedMap[task.id];
+    const displayText = resolveTaskText(task, taskTexts, examName);
+    const noteVal = (taskNotes && taskNotes[task.id]) !== void 0 ? taskNotes && taskNotes[task.id] : void 0;
+    return /* @__PURE__ */ React.createElement("div", { key: task.id, className: `task-row-wrap ${done ? "task-done" : ""}` }, /* @__PURE__ */ React.createElement("div", { className: "task-row" }, /* @__PURE__ */ React.createElement("label", { className: "task-main" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: done, onChange: () => onToggleTask(phase.key, task.id), className: "task-cb" }), /* @__PURE__ */ React.createElement("span", { className: "task-text" }, displayText)), /* @__PURE__ */ React.createElement("div", { className: "task-meta" }, /* @__PURE__ */ React.createElement("div", { className: "badge-group" }, roleIds.map((rid) => /* @__PURE__ */ React.createElement(RoleBadge, { key: rid, role: getRole(roles, rid) }))), phase.hasDueDates && /* @__PURE__ */ React.createElement("label", { className: "due-date-field" }, /* @__PURE__ */ React.createElement("span", { className: "due-date-label" }, "Due"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "date",
+        className: "due-date-input",
+        value: taskDueDates && taskDueDates[task.id] || "",
+        onChange: (e) => onDueDateChange(task.id, e.target.value),
+        "aria-label": "Due date"
+      }
+    )))), task.hasNote && /* @__PURE__ */ React.createElement("div", { className: "task-note-row" }, /* @__PURE__ */ React.createElement("span", { className: "task-note-label" }, "Note"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "task-note-input",
+        placeholder: task.noteDefault || "Add a note\u2026",
+        value: noteVal !== void 0 ? noteVal : "",
+        onChange: (e) => onTaskNoteChange(task.id, e.target.value)
+      }
+    )), task.hasAssignee && /* @__PURE__ */ React.createElement("div", { className: "task-note-row" }, /* @__PURE__ */ React.createElement("span", { className: "task-note-label assignee-label" }, "RS"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "task-note-input assignee-input",
+        placeholder: "Assigned to (e.g. Nikhil, Brittany, John)\u2026",
+        value: taskNotes && taskNotes[task.id + "__assignee"] || "",
+        onChange: (e) => onTaskNoteChange(task.id + "__assignee", e.target.value)
+      }
+    )));
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, phase.short), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, phase.label)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 } }, phaseDateVal && /* @__PURE__ */ React.createElement(PhaseDateBadge, { dateStr: phaseDateVal, label: PHASE_DATE_LABELS[phase.key] || phase.short, color: phaseDateColor }), /* @__PURE__ */ React.createElement(ProgressRing, { value: doneCount, total: tasks.length, size: 52 }))), /* @__PURE__ */ React.createElement("div", { className: "card toolbar-card" }, /* @__PURE__ */ React.createElement(ProgressBar, { value: doneCount, total: tasks.length }), /* @__PURE__ */ React.createElement("div", { className: "toolbar-row", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, doneCount, " of ", tasks.length, " tasks complete"), roleFilter.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "muted", style: { color: "var(--accent)" } }, "\xB7 ", roleFilter.length, " role", roleFilter.length > 1 ? "s" : "", " filtered")), /* @__PURE__ */ React.createElement(RoleFilter, { roles, active: roleFilter, onChange: setRoleFilter, rsNames })), phase.grouped ? PRE_GROUPS.map((g) => {
+    const gt = visibleTasks.filter((t) => t.group === g.key);
+    if (!gt.length) return null;
+    const gDone = gt.filter((t) => completedMap[t.id]).length;
+    return /* @__PURE__ */ React.createElement(
+      Collapsible,
+      {
+        key: g.key,
+        title: g.label,
+        subtitle: (() => {
+          const gi = PRE_GROUP_DATE_INFO[g.key];
+          const gv = gi && sd[gi.dateKey] ? sd[gi.dateKey] : "";
+          return gv ? fmtFull(gv) : "";
+        })(),
+        badge: `${gDone}/${gt.length}`,
+        defaultOpen: true
+      },
+      (() => {
+        const gi = PRE_GROUP_DATE_INFO[g.key];
+        const gv = gi && sd[gi.dateKey] ? sd[gi.dateKey] : "";
+        return gv ? /* @__PURE__ */ React.createElement("div", { style: { padding: "0 0 8px" } }, /* @__PURE__ */ React.createElement(PhaseDateBadge, { dateStr: gv, label: gi.label, color: gi.color })) : null;
+      })(),
+      /* @__PURE__ */ React.createElement("div", { className: "task-list" }, gt.map(renderRow))
+    );
+  }) : /* @__PURE__ */ React.createElement("div", { className: "card task-list" }, visibleTasks.length === 0 ? /* @__PURE__ */ React.createElement(EmptyState, { icon: ClipboardList, title: "No tasks match this filter", body: "Try a different role." }) : visibleTasks.map(renderRow)), /* @__PURE__ */ React.createElement("div", { className: "card" }, /* @__PURE__ */ React.createElement("div", { className: "notes-label" }, "Session notes for ", phase.short), /* @__PURE__ */ React.createElement(
+    "textarea",
+    {
+      className: "notes-ta",
+      rows: 4,
+      value: notes,
+      onChange: (e) => onNotesChange(phase.key, e.target.value),
+      placeholder: `Add notes for ${phase.short}\u2026`
+    }
+  ), /* @__PURE__ */ React.createElement("div", { className: "notes-hint" }, "Notes are saved automatically and are personal to your view.")));
+}
+function Tracker({ panelists, setPanelists, trackerColumns, setTrackerColumns, addLog }) {
+  const [colMenuOpen, setColMenuOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [draft, setDraft] = useState(blankPanelist());
+  const [pendingUndo, setPendingUndo] = useState(null);
+  const [replaceConfirm, setReplaceConfirm] = useState(null);
+  const [importError, setImportError] = useState("");
+  const undoRef = useRef(null);
+  const fileRef = useRef(null);
+  useEffect(() => () => {
+    if (undoRef.current) clearTimeout(undoRef.current);
+  }, []);
+  const visText = TRACKER_TEXT_COLS.filter((c) => trackerColumns[c.key] !== false || c.alwaysVisible);
+  const visBool = TRACKER_BOOL_COLS.filter((c) => trackerColumns[c.key] !== false);
+  const trackerLogTimerRef = useRef({});
+  function updateField(id, key, value) {
+    var _a;
+    setPanelists((prev) => prev.map((p) => p.id === id ? { ...p, [key]: value } : p));
+    const pan = panelists.find((p) => p.id === id);
+    const name = (pan == null ? void 0 : pan.name) || id;
+    const colLabel = ((_a = [...TRACKER_TEXT_COLS, ...TRACKER_BOOL_COLS].find((c) => c.key === key)) == null ? void 0 : _a.label) || key;
+    if (typeof value === "boolean") {
+      if (addLog) addLog("Tracker updated", `${name} \u2014 ${colLabel}: ${value ? "Yes" : "No"}`);
+    } else {
+      const timerKey = `${id}_${key}`;
+      if (trackerLogTimerRef.current[timerKey]) clearTimeout(trackerLogTimerRef.current[timerKey]);
+      if (addLog) trackerLogTimerRef.current[timerKey] = setTimeout(() => {
+        addLog("Tracker field edited", `${name} \u2014 ${colLabel}`);
+      }, 1500);
+    }
+  }
+  function addPanelist() {
+    if (!draft.name.trim()) return;
+    setPanelists((prev) => [{ ...draft, id: makeId("p") }, ...prev]);
+    if (addLog) addLog("Panelist added", `${draft.name} added to tracker`);
+    setDraft(blankPanelist());
+    setAddOpen(false);
+  }
+  function remove(id) {
+    const idx = panelists.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const removed = panelists[idx];
+    if (addLog) addLog("Panelist removed", removed.name || id);
+    setPanelists((prev) => prev.filter((p) => p.id !== id));
+    if (undoRef.current) clearTimeout(undoRef.current);
+    setPendingUndo({ panelist: removed, index: idx });
+    undoRef.current = setTimeout(() => setPendingUndo(null), 8e3);
+  }
+  function undoRemove() {
+    if (!pendingUndo) return;
+    setPanelists((prev) => {
+      const c = [...prev];
+      c.splice(Math.min(pendingUndo.index, c.length), 0, pendingUndo.panelist);
+      return c;
+    });
+    if (undoRef.current) clearTimeout(undoRef.current);
+    setPendingUndo(null);
+  }
+  function parseRows(rows) {
+    if (!rows.length) return [];
+    const headers = Object.keys(rows[0]), map = {};
+    headers.forEach((h) => {
+      const f = matchColumn(h);
+      if (f) map[h] = f;
+    });
+    return rows.map((row) => {
+      const p = blankPanelist();
+      headers.forEach((h) => {
+        if (map[h]) p[map[h]] = String(row[h] || "").trim();
+      });
+      p.id = makeId("p");
+      return p;
+    }).filter((p) => p.name);
+  }
+  function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setImportError("");
+    if (/\.csv$/i.test(file.name)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        Papa.parse(String(reader.result), {
+          header: true,
+          skipEmptyLines: true,
+          complete: (res) => {
+            const p = parseRows(res.data);
+            if (!p.length) {
+              setImportError("No rows found.");
+              return;
+            }
+            setReplaceConfirm(p);
+          },
+          error: () => setImportError("Could not read CSV.")
+        });
+      };
+      reader.readAsText(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const wb = XLSX.read(reader.result, { type: "array" });
+          const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+          const p = parseRows(rows);
+          if (!p.length) {
+            setImportError("No rows found.");
+            return;
+          }
+          setReplaceConfirm(p);
+        } catch (err) {
+          setImportError("Could not read Excel file.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+    e.target.value = "";
+  }
+  function exportXlsx() {
+    if (addLog) addLog("Tracker exported", `${panelists.length} panelists exported to Excel`);
+    const cols = [...visText, ...visBool];
+    const rows = panelists.map((p) => {
+      const r = {};
+      cols.forEach((c) => {
+        r[c.label] = TRACKER_BOOL_COLS.some((b) => b.key === c.key) ? p[c.key] ? "Yes" : "No" : p[c.key] || "";
+      });
+      return r;
+    });
+    const ws = XLSX.utils.json_to_sheet(rows), wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tracker");
+    XLSX.writeFile(wb, `CLEP_VBSS_Tracker_${todayStamp()}.xlsx`);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Shared \xB7 syncs across your team"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Attendance & Form Tracker"))), /* @__PURE__ */ React.createElement("div", { className: "card toolbar-card" }, /* @__PURE__ */ React.createElement("div", { className: "toolbar-row toolbar-wrap" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => setAddOpen((v) => !v) }, /* @__PURE__ */ React.createElement(UserPlus, { size: 14 }), " Add panelist"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(Upload, { size: 14 }), " Import CSV/XLSX"), /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: ".csv,.xlsx,.xls", onChange: handleFile, style: { display: "none" } }), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: exportXlsx }, /* @__PURE__ */ React.createElement(Download, { size: 14 }), " Export XLSX"), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setColMenuOpen((v) => !v) }, /* @__PURE__ */ React.createElement(Columns3, { size: 14 }), " Columns"), colMenuOpen && /* @__PURE__ */ React.createElement("div", { className: "col-menu" }, ALL_TRACKER_COLS.filter((c) => !c.alwaysVisible).map((c) => /* @__PURE__ */ React.createElement("label", { key: c.key, className: "col-menu-item" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: trackerColumns[c.key] !== false, onChange: () => setTrackerColumns((p) => ({ ...p, [c.key]: p[c.key] === false })) }), c.label)))), /* @__PURE__ */ React.createElement("span", { className: "muted", style: { marginLeft: "auto" } }, panelists.length, " panelists")), importError && /* @__PURE__ */ React.createElement("div", { className: "error-txt" }, importError)), addOpen && /* @__PURE__ */ React.createElement("div", { className: "card add-form" }, TRACKER_TEXT_COLS.map((c) => /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      key: c.key,
+      className: "input",
+      placeholder: c.label,
+      value: draft[c.key],
+      onChange: (e) => setDraft((d) => ({ ...d, [c.key]: e.target.value })),
+      onKeyDown: (e) => e.key === "Enter" && addPanelist()
+    }
+  )), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: addPanelist }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setAddOpen(false) }, /* @__PURE__ */ React.createElement(X, { size: 14 }))), /* @__PURE__ */ React.createElement("div", { className: "card tbl-card" }, /* @__PURE__ */ React.createElement("div", { className: "tbl-scroll" }, /* @__PURE__ */ React.createElement("table", { className: "tbl" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, visText.map((c) => /* @__PURE__ */ React.createElement("th", { key: c.key }, c.label)), visBool.map((c) => /* @__PURE__ */ React.createElement("th", { key: c.key, className: "tc" }, c.label)), /* @__PURE__ */ React.createElement("th", { className: "tc" }, "Remove"))), /* @__PURE__ */ React.createElement("tbody", null, panelists.length === 0 ? /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: visText.length + visBool.length + 1 }, /* @__PURE__ */ React.createElement(EmptyState, { icon: Table2, title: "No panelists yet", body: "Add manually or import a roster." }))) : panelists.map((p) => /* @__PURE__ */ React.createElement("tr", { key: p.id }, visText.map((c) => /* @__PURE__ */ React.createElement("td", { key: c.key }, /* @__PURE__ */ React.createElement("input", { className: "cell-input", value: p[c.key] || "", onChange: (e) => updateField(p.id, c.key, e.target.value) }))), visBool.map((c) => /* @__PURE__ */ React.createElement("td", { key: c.key, className: "tc" }, /* @__PURE__ */ React.createElement("button", { className: `yesno ${p[c.key] ? "yn-yes" : "yn-no"}`, onClick: () => updateField(p.id, c.key, !p[c.key]) }, p[c.key] ? "Yes" : "No"))), /* @__PURE__ */ React.createElement("td", { className: "tc" }, /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => remove(p.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))))))))), /* @__PURE__ */ React.createElement(
+    Confirm,
+    {
+      open: !!replaceConfirm,
+      title: "Replace panelist list?",
+      body: `Import ${replaceConfirm ? replaceConfirm.length : 0} panelists? This replaces the current list.`,
+      confirmLabel: "Replace",
+      danger: true,
+      onConfirm: () => {
+        if (replaceConfirm) {
+          setPanelists(replaceConfirm);
+          if (addLog) addLog("Tracker imported", `${replaceConfirm.length} panelists imported from file`);
+        }
+        setReplaceConfirm(null);
+      },
+      onCancel: () => setReplaceConfirm(null)
+    }
+  ), /* @__PURE__ */ React.createElement(
+    UndoToast,
+    {
+      visible: !!pendingUndo,
+      message: pendingUndo ? `Removed ${pendingUndo.panelist.name || "panelist"}` : "",
+      onUndo: undoRemove
+    }
+  ));
+}
+function DocsPage({ docs, setDocs, saveDocs, addLog }) {
+  const [activeCat, setActiveCat] = useState("agenda");
+  const [addingLink, setAddingLink] = useState(false);
+  const [linkDraft, setLinkDraft] = useState({ title: "", url: "", description: "", category: "agenda" });
+  const [pendingUndo, setPendingUndo] = useState(null);
+  const [pendingUrlDoc, setPendingUrlDoc] = useState(null);
+  const [viewingDoc2, setViewingDoc2] = useState(null);
+  const [editingDescId, setEditingDescId] = useState(null);
+  const [editingDescVal, setEditingDescVal] = useState("");
+  const undoRef = useRef(null);
+  useEffect(() => () => {
+    if (undoRef.current) clearTimeout(undoRef.current);
+  }, []);
+  const catDocs = docs.filter((d) => d.category === activeCat);
+  function addLink() {
+    var _a;
+    if (!linkDraft.title.trim() || !linkDraft.url.trim()) return;
+    const url = linkDraft.url.startsWith("http") ? linkDraft.url : "https://" + linkDraft.url;
+    const newDoc = { id: makeId("doc"), type: "link", title: linkDraft.title, url, description: linkDraft.description.trim(), category: linkDraft.category, addedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    setDocs((prev) => {
+      const n = [newDoc, ...prev];
+      if (saveDocs) saveDocs(n);
+      return n;
+    });
+    if (addLog) addLog("Link added", `${linkDraft.title} (${((_a = DOC_CATEGORIES.find((c) => c.key === linkDraft.category)) == null ? void 0 : _a.label) || linkDraft.category})`);
+    setLinkDraft({ title: "", url: "", description: "", category: activeCat });
+    setAddingLink(false);
+  }
+  function handleUpload(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    files.forEach((f) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target.result;
+        const newDoc = {
+          id: makeId("doc"),
+          type: "file",
+          title: f.name,
+          fileName: f.name,
+          fileSize: f.size,
+          fileType: f.type,
+          dataUrl,
+          url: "",
+          description: "",
+          category: activeCat,
+          addedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        setDocs((prev) => {
+          const n = [newDoc, ...prev];
+          if (saveDocs) saveDocs(n);
+          return n;
+        });
+        if (addLog) addLog("File uploaded", f.name);
+      };
+      reader.readAsDataURL(f);
+    });
+    e.target.value = "";
+  }
+  function setDocUrl(id, url) {
+    setDocs((prev) => prev.map((d) => d.id === id ? { ...d, url } : d));
+    if (url && addLog) addLog("Document link added", url);
+    setPendingUrlDoc(null);
+  }
+  function removeDoc(id) {
+    var _a;
+    const d = docs.find((x) => x.id === id);
+    if (!d) return;
+    if (addLog) addLog("Document removed", `${d.title} (${((_a = DOC_CATEGORIES.find((c) => c.key === d.category)) == null ? void 0 : _a.label) || d.category})`);
+    setDocs((prev) => {
+      const n = prev.filter((x) => x.id !== id);
+      if (saveDocs) saveDocs(n);
+      return n;
+    });
+    if (undoRef.current) clearTimeout(undoRef.current);
+    setPendingUndo(d);
+    undoRef.current = setTimeout(() => setPendingUndo(null), 8e3);
+  }
+  function undoRemove() {
+    if (!pendingUndo) return;
+    setDocs((prev) => {
+      const n = [pendingUndo, ...prev];
+      if (saveDocs) saveDocs(n);
+      return n;
+    });
+    if (undoRef.current) clearTimeout(undoRef.current);
+    setPendingUndo(null);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Tracking"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Documents & Links"))), /* @__PURE__ */ React.createElement("div", { className: "doc-cat-row" }, DOC_CATEGORIES.map((c) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: c.key,
+      className: `doc-cat-btn ${activeCat === c.key ? "doc-cat-active" : ""}`,
+      onClick: () => {
+        setActiveCat(c.key);
+        setLinkDraft((d) => ({ ...d, category: c.key }));
+      }
+    },
+    c.icon,
+    " ",
+    c.label,
+    docs.filter((d) => d.category === c.key).length > 0 && /* @__PURE__ */ React.createElement("span", { className: "doc-cat-count" }, docs.filter((d) => d.category === c.key).length)
+  ))), /* @__PURE__ */ React.createElement("div", { className: "card toolbar-card" }, /* @__PURE__ */ React.createElement("div", { className: "toolbar-row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => setAddingLink((v) => !v) }, /* @__PURE__ */ React.createElement(Link, { size: 14 }), " Add link"), /* @__PURE__ */ React.createElement("label", { className: "btn btn-secondary", style: { cursor: "pointer" } }, /* @__PURE__ */ React.createElement(Upload, { size: 14 }), " Upload file", /* @__PURE__ */ React.createElement("input", { type: "file", multiple: true, onChange: handleUpload, style: { display: "none" } })))), addingLink && /* @__PURE__ */ React.createElement("div", { className: "card add-form", style: { flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { flex: 2, minWidth: 160 },
+      placeholder: "Title (e.g. Day 1 Agenda v3)",
+      value: linkDraft.title,
+      onChange: (e) => setLinkDraft((d) => ({ ...d, title: e.target.value }))
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { flex: 3, minWidth: 200 },
+      placeholder: "URL (e.g. https://docs.google.com/\u2026)",
+      value: linkDraft.url,
+      onChange: (e) => setLinkDraft((d) => ({ ...d, url: e.target.value })),
+      onKeyDown: (e) => e.key === "Enter" && addLink()
+    }
+  ), /* @__PURE__ */ React.createElement("select", { className: "select", value: linkDraft.category, onChange: (e) => setLinkDraft((d) => ({ ...d, category: e.target.value })) }, DOC_CATEGORIES.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.key, value: c.key }, c.label))), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: addLink }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setAddingLink(false) }, /* @__PURE__ */ React.createElement(X, { size: 14 }))), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      placeholder: "Description (optional \u2014 e.g. Final version approved by Ting, Aug 15)",
+      value: linkDraft.description,
+      onChange: (e) => setLinkDraft((d) => ({ ...d, description: e.target.value }))
+    }
+  )), /* @__PURE__ */ React.createElement("div", { className: "card", style: { padding: 0, overflow: "hidden" } }, catDocs.length === 0 ? /* @__PURE__ */ React.createElement(
+    EmptyState,
+    {
+      icon: FileText,
+      title: "Nothing here yet",
+      body: "Add a link or upload a file. It will appear here under this category."
+    }
+  ) : catDocs.map((doc) => /* @__PURE__ */ React.createElement("div", { key: doc.id, className: "doc-row", style: { alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", { className: "doc-icon", style: { marginTop: 2 } }, doc.type === "link" ? /* @__PURE__ */ React.createElement(Link, { size: 16 }) : /* @__PURE__ */ React.createElement(FileText, { size: 16 })), /* @__PURE__ */ React.createElement("div", { className: "doc-info", style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { className: "doc-title" }, doc.type === "link" ? /* @__PURE__ */ React.createElement("a", { href: doc.url, target: "_blank", rel: "noreferrer" }, doc.title) : /* @__PURE__ */ React.createElement("span", null, doc.title)), editingDescId === doc.id ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 4 } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { flex: 1, fontSize: "11px", padding: "3px 8px" },
+      autoFocus: true,
+      value: editingDescVal,
+      onChange: (e) => setEditingDescVal(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === "Enter") {
+          setDocs((prev) => {
+            const n = prev.map((d) => d.id === doc.id ? { ...d, description: editingDescVal.trim() } : d);
+            if (saveDocs) saveDocs(n);
+            return n;
+          });
+          setEditingDescId(null);
+        }
+        if (e.key === "Escape") setEditingDescId(null);
+      }
+    }
+  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", style: { fontSize: "10px", padding: "2px 8px" }, onClick: () => {
+    setDocs((prev) => {
+      const n = prev.map((d) => d.id === doc.id ? { ...d, description: editingDescVal.trim() } : d);
+      if (saveDocs) saveDocs(n);
+      return n;
+    });
+    setEditingDescId(null);
+  } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", style: { fontSize: "10px", padding: "2px 8px" }, onClick: () => setEditingDescId(null) }, "Cancel")) : /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      style: { fontSize: "11px", color: "var(--muted)", marginTop: 2, lineHeight: 1.4, cursor: "pointer", fontStyle: doc.description ? "normal" : "italic" },
+      onClick: () => {
+        setEditingDescId(doc.id);
+        setEditingDescVal(doc.description || "");
+      }
+    },
+    doc.description || "Add description\u2026"
+  ), doc.type === "link" && /* @__PURE__ */ React.createElement("div", { className: "doc-url", style: { marginTop: 3 } }, doc.url), doc.type === "file" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 3 } }, doc.dataUrl && /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", style: { fontSize: "10px", padding: "2px 8px" }, onClick: () => setViewingDoc2(doc) }, "\u{1F441} View"), doc.dataUrl && /* @__PURE__ */ React.createElement("a", { className: "btn btn-secondary", style: { fontSize: "10px", padding: "2px 8px" }, href: doc.dataUrl, download: doc.fileName }, "\u2B07 Download"), doc.fileSize && /* @__PURE__ */ React.createElement("span", { className: "muted", style: { fontSize: "10px" } }, (doc.fileSize / 1024).toFixed(1), " KB"))), /* @__PURE__ */ React.createElement("button", { className: "icon-btn", style: { marginTop: 2 }, onClick: () => removeDoc(doc.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))))), /* @__PURE__ */ React.createElement(
+    UndoToast,
+    {
+      visible: !!pendingUndo,
+      message: pendingUndo ? `Removed "${pendingUndo.title}"` : "",
+      onUndo: undoRemove
+    }
+  ));
+}
+function TaskEditor({ examName, setExamName, taskTexts, setTaskTexts, taskAssignments, setTaskAssignments, taskDueDates, setTaskDueDates, roles, setRoles, roleNames, setRoleNames, addLog }) {
+  const [phaseFilter, setPhaseFilter] = useState("ALL");
+  const [search, setSearch] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editVal, setEditVal] = useState("");
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleAbbr, setNewRoleAbbr] = useState("");
+  const [removeRoleTarget, setRemoveRoleTarget] = useState(null);
+  const searchNorm = search.trim().toLowerCase();
+  const phasesToShow = phaseFilter === "ALL" ? PHASES : PHASES.filter((p) => p.key === phaseFilter);
+  function startEdit(task) {
+    setEditingId(task.id);
+    setEditVal(taskTexts[task.id] || task.text);
+  }
+  function saveEdit(taskId) {
+    setTaskTexts((prev) => ({ ...prev, [taskId]: editVal }));
+    if (addLog) addLog("Task text edited", editVal.slice(0, 80));
+    setEditingId(null);
+  }
+  function resetText(taskId, originalText) {
+    setTaskTexts((prev) => {
+      const n = { ...prev };
+      delete n[taskId];
+      return n;
+    });
+    if (addLog) addLog("Task text reset", originalText.slice(0, 80));
+  }
+  function toggleRole(task, roleId) {
+    setTaskAssignments((prev) => {
+      const current = Array.isArray(prev[task.id]) && prev[task.id].length ? prev[task.id] : [task.role];
+      let next = current.includes(roleId) ? current.filter((r) => r !== roleId) : [...current, roleId];
+      if (!next.length) next = current;
+      const copy = { ...prev };
+      if (next.length === 1 && next[0] === task.role) delete copy[task.id];
+      else copy[task.id] = next;
+      return copy;
+    });
+  }
+  function addRole() {
+    const name = newRoleName.trim();
+    if (!name) return;
+    const id = slugify(name, roles.map((r) => r.id));
+    setRoles((prev) => [...prev, { id, name, abbr: newRoleAbbr.trim(), color: nextColor(prev), removable: true, blurb: "" }]);
+    if (addLog) addLog("Role added", name);
+    setNewRoleName("");
+    setNewRoleAbbr("");
+  }
+  function confirmRemoveRole() {
+    const id = removeRoleTarget;
+    setRoles((prev) => prev.filter((r) => r.id !== id));
+    setTaskAssignments((prev) => {
+      const n = { ...prev };
+      Object.keys(n).forEach((tid) => {
+        if (Array.isArray(n[tid])) {
+          const f = n[tid].filter((r) => r !== id);
+          if (!f.length) delete n[tid];
+          else n[tid] = f;
+        }
+      });
+      return n;
+    });
+    setRemoveRoleTarget(null);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Admin"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Task & Role Editor"))), /* @__PURE__ */ React.createElement(Collapsible, { title: "Team members", defaultOpen: true }, /* @__PURE__ */ React.createElement("div", { className: "notes-hint", style: { marginBottom: 10 } }, "Enter the name of the person filling each role for this session."), /* @__PURE__ */ React.createElement("div", { className: "role-name-grid" }, roles.filter((r) => r.id !== "allstaff").map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "role-name-row" }, /* @__PURE__ */ React.createElement(RoleBadge, { role: r }), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input role-name-input",
+      placeholder: `e.g. ${r.id === "pm" ? "Len Carmichael" : r.id === "psych" ? "Ting Zhang" : r.id === "pf" ? "Yuan Ge" : r.id === "cf" ? "Andrew Roibal" : r.id === "dqa" ? "Amanda Faille" : r.id === "rs" ? "Christopher Jones" : r.id === "program" ? "Huanwei Zhao" : "Name"}`,
+      value: roleNames[r.id] || "",
+      onChange: (e) => {
+        setRoleNames((prev) => ({ ...prev, [r.id]: e.target.value }));
+        clearTimeout(window[`__rnTimer_${r.id}`]);
+        if (e.target.value.trim() && addLog) window[`__rnTimer_${r.id}`] = setTimeout(() => addLog("Team member set", `${r.name}: ${e.target.value.trim()}`), 1500);
+      }
+    }
+  ))))), /* @__PURE__ */ React.createElement(Collapsible, { title: "Roles", defaultOpen: false }, /* @__PURE__ */ React.createElement("div", { className: "role-chips" }, roles.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "role-chip" }, /* @__PURE__ */ React.createElement(RoleBadge, { role: r }), /* @__PURE__ */ React.createElement("span", { className: "role-chip-blurb" }, r.blurb), r.removable && /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => setRemoveRoleTarget(r.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 13 }))))), /* @__PURE__ */ React.createElement("div", { className: "toolbar-row", style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement("input", { className: "input", placeholder: "New role name", value: newRoleName, onChange: (e) => setNewRoleName(e.target.value) }), /* @__PURE__ */ React.createElement("input", { className: "input", style: { maxWidth: 130 }, placeholder: "Abbreviation", value: newRoleAbbr, onChange: (e) => setNewRoleAbbr(e.target.value) }), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: addRole }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add role"))), /* @__PURE__ */ React.createElement(Collapsible, { title: "Edit task text & assignments", defaultOpen: true }, /* @__PURE__ */ React.createElement("div", { className: "toolbar-row", style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("select", { className: "select", value: phaseFilter, onChange: (e) => setPhaseFilter(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "ALL" }, "All phases"), PHASES.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.key, value: p.key }, p.short))), /* @__PURE__ */ React.createElement("div", { className: "search-wrap", style: { flex: 1 } }, /* @__PURE__ */ React.createElement(Search, { size: 13 }), /* @__PURE__ */ React.createElement("input", { className: "search-input", placeholder: "Search tasks\u2026", value: search, onChange: (e) => setSearch(e.target.value) }))), phasesToShow.map((phase) => {
+    const tasks = DEFAULT_TASKS[phase.key].filter((t) => !searchNorm || t.text.toLowerCase().includes(searchNorm));
+    if (!tasks.length) return null;
+    return /* @__PURE__ */ React.createElement(
+      Collapsible,
+      {
+        key: phase.key,
+        title: phase.label,
+        defaultOpen: false,
+        badge: `${tasks.length} tasks`
+      },
+      tasks.map((task) => {
+        const sel = effectiveRoles(task, taskAssignments);
+        const overText = !!taskTexts[task.id];
+        const isEditing = editingId === task.id;
+        return /* @__PURE__ */ React.createElement("div", { key: task.id, className: "admin-task-row" }, /* @__PURE__ */ React.createElement("div", { className: "admin-task-left" }, isEditing ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flex: 1 } }, /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            className: "input",
+            style: { flex: 1 },
+            value: editVal,
+            onChange: (e) => setEditVal(e.target.value),
+            onKeyDown: (e) => e.key === "Enter" && saveEdit(task.id)
+          }
+        ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => saveEdit(task.id) }, /* @__PURE__ */ React.createElement(Check, { size: 13 })), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setEditingId(null) }, /* @__PURE__ */ React.createElement(X, { size: 13 }))) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flex: 1 } }, /* @__PURE__ */ React.createElement("span", { className: "admin-task-txt" }, resolveTaskText(task, taskTexts, examName)), /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => startEdit(task), title: "Edit text" }, /* @__PURE__ */ React.createElement(Pencil, { size: 13 })), overText && /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => resetText(task.id, task.text), title: "Reset to default" }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 13 })))), /* @__PURE__ */ React.createElement("div", { className: "admin-role-pick" }, roles.map((r) => /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            key: r.id,
+            className: `rf-chip rf-chip-sm ${sel.includes(r.id) ? "rf-active" : ""}`,
+            style: sel.includes(r.id) ? { background: `${r.color}22`, color: r.color, borderColor: `${r.color}55` } : {},
+            onClick: () => toggleRole(task, r.id)
+          },
+          r.abbr && r.abbr.trim() ? r.abbr : r.name
+        )), taskAssignments[task.id] && /* @__PURE__ */ React.createElement("button", { className: "icon-btn", title: "Reset", onClick: () => setTaskAssignments((p) => {
+          const n = { ...p };
+          delete n[task.id];
+          return n;
+        }) }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 12 }))));
+      })
+    );
+  })), /* @__PURE__ */ React.createElement(
+    Confirm,
+    {
+      open: !!removeRoleTarget,
+      title: "Remove this role?",
+      danger: true,
+      body: "Tasks assigned to this role will revert to their default owner.",
+      confirmLabel: "Remove",
+      onConfirm: confirmRemoveRole,
+      onCancel: () => setRemoveRoleTarget(null)
+    }
+  ), viewingDoc && /* @__PURE__ */ React.createElement("div", { className: "modal-overlay", onClick: () => setViewingDoc(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal-box", style: { maxWidth: 860, width: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid var(--border)" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, fontSize: "13px", color: "var(--navy)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, viewingDoc.title), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexShrink: 0 } }, /* @__PURE__ */ React.createElement("a", { className: "btn btn-secondary", style: { fontSize: "11px" }, href: viewingDoc.dataUrl, download: viewingDoc.fileName }, "\u2B07 Download"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", style: { fontSize: "11px" }, onClick: () => setViewingDoc(null) }, "\u2715 Close"))), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, overflow: "auto", background: "#F7F5FB", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 } }, viewingDoc.fileType && viewingDoc.fileType.startsWith("image/") ? /* @__PURE__ */ React.createElement("img", { src: viewingDoc.dataUrl, alt: viewingDoc.title, style: { maxWidth: "100%", maxHeight: "70vh", objectFit: "contain" } }) : viewingDoc.fileType === "application/pdf" ? /* @__PURE__ */ React.createElement("iframe", { src: viewingDoc.dataUrl, style: { width: "100%", height: "70vh", border: "none" }, title: viewingDoc.title }) : /* @__PURE__ */ React.createElement("div", { style: { textAlign: "center", padding: 40 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 48, marginBottom: 12 } }, "\u{1F4C4}"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: "13px", color: "var(--muted)", marginBottom: 16 } }, viewingDoc.fileName), /* @__PURE__ */ React.createElement("a", { className: "btn btn-primary", href: viewingDoc.dataUrl, download: viewingDoc.fileName }, "\u2B07 Download file"))))));
+}
+const RACI_OPTIONS = ["R", "A", "C", "I", null];
+function RaciMatrix({ raciData, setRaciData, roles, addLog }) {
+  const [highlight, setHighlight] = useState(null);
+  const [editingCell, setEditingCell] = useState(null);
+  const [addingRow, setAddingRow] = useState(false);
+  const [newCat, setNewCat] = useState("");
+  const displayRoles = RACI_ROLE_ORDER.map((id) => getRole(roles, id)).filter(Boolean);
+  const letterLabel = { R: "Responsible", A: "Accountable", C: "Consulted", I: "Informed" };
+  const colors = { R: "#2F9E44", A: "#3E63DD", C: "#E8590C", I: "#9333EA" };
+  function cycleCell(rowId, roleId) {
+    setRaciData((prev) => prev.map((row) => {
+      if (row.id !== rowId) return row;
+      const cur = row.raci[roleId] || null;
+      const next = RACI_OPTIONS[(RACI_OPTIONS.indexOf(cur) + 1) % RACI_OPTIONS.length];
+      const roleObj = getRole(roles, roleId);
+      if (addLog) addLog("RACI cell updated", `${row.category} \u2014 ${(roleObj == null ? void 0 : roleObj.name) || roleId}: ${cur || "\u2014"} \u2192 ${next || "\u2014"}`);
+      return { ...row, raci: { ...row.raci, [roleId]: next } };
+    }));
+  }
+  function addRow() {
+    if (!newCat.trim()) return;
+    const id = makeId("raci");
+    const raci = {};
+    RACI_ROLE_ORDER.forEach((r) => raci[r] = null);
+    setRaciData((prev) => [...prev, { id, category: newCat.trim(), raci }]);
+    if (addLog) addLog("RACI row added", newCat.trim());
+    setNewCat("");
+    setAddingRow(false);
+  }
+  function removeRow(id) {
+    const row = raciData.find((r) => r.id === id);
+    if (addLog && row) addLog("RACI row removed", row.category);
+    setRaciData((prev) => prev.filter((r) => r.id !== id));
+  }
+  function updateCategory(id, val) {
+    setRaciData((prev) => prev.map((r) => r.id === id ? { ...r, category: val } : r));
+    if (addLog && val.trim()) addLog("RACI category renamed", val.trim());
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Reference"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "RACI Matrix"))), /* @__PURE__ */ React.createElement("div", { className: "card raci-legend" }, Object.keys(letterLabel).map((k) => /* @__PURE__ */ React.createElement("div", { key: k, className: "raci-legend-item", style: { borderLeft: `3px solid ${colors[k]}` } }, /* @__PURE__ */ React.createElement("strong", { style: { color: colors[k] } }, k), " ", letterLabel[k])), /* @__PURE__ */ React.createElement("span", { className: "muted", style: { marginLeft: "auto" } }, "Click a cell to cycle R\u2192A\u2192C\u2192I\u2192blank. Click header to highlight column.")), /* @__PURE__ */ React.createElement("div", { className: "card tbl-card" }, /* @__PURE__ */ React.createElement("div", { className: "tbl-scroll" }, /* @__PURE__ */ React.createElement("table", { className: "tbl raci-tbl" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { minWidth: 200 } }, "Task Category"), displayRoles.map((r) => /* @__PURE__ */ React.createElement(
+    "th",
+    {
+      key: r.id,
+      className: `tc raci-th ${highlight === r.id ? "raci-th-hl" : ""}`,
+      onClick: () => setHighlight(highlight === r.id ? null : r.id),
+      style: { cursor: "pointer", minWidth: 80 }
+    },
+    /* @__PURE__ */ React.createElement(RoleBadge, { role: r, size: "sm" })
+  )), /* @__PURE__ */ React.createElement("th", { className: "tc", style: { minWidth: 48 } }, "Del"))), /* @__PURE__ */ React.createElement("tbody", null, raciData.map((row) => /* @__PURE__ */ React.createElement("tr", { key: row.id, className: highlight && row.raci[highlight] ? "raci-row-hl" : "" }, /* @__PURE__ */ React.createElement("td", null, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "cell-input",
+      value: row.category,
+      onChange: (e) => updateCategory(row.id, e.target.value),
+      style: { minWidth: 180 }
+    }
+  )), displayRoles.map((r) => {
+    const val = row.raci[r.id] || null;
+    return /* @__PURE__ */ React.createElement("td", { key: r.id, className: `tc ${highlight === r.id ? "raci-td-hl" : ""}` }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        className: "raci-cell-btn",
+        style: val ? { background: `${colors[val]}18`, color: colors[val], borderColor: `${colors[val]}44` } : {},
+        onClick: () => cycleCell(row.id, r.id),
+        title: "Click to cycle"
+      },
+      val || /* @__PURE__ */ React.createElement("span", { className: "muted" }, "\u2013")
+    ));
+  }), /* @__PURE__ */ React.createElement("td", { className: "tc" }, /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => removeRow(row.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 13 }))))))))), addingRow ? /* @__PURE__ */ React.createElement("div", { className: "card add-form" }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      placeholder: "New task category name",
+      value: newCat,
+      onChange: (e) => setNewCat(e.target.value),
+      onKeyDown: (e) => e.key === "Enter" && addRow()
+    }
+  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: addRow }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add row"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setAddingRow(false) }, /* @__PURE__ */ React.createElement(X, { size: 14 }))) : /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => setAddingRow(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add category row"));
+}
+function Glossary({ glossaryTerms, setGlossaryTerms, addLog }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ term: "", def: "" });
+  const [editId, setEditId] = useState(null);
+  const [editDraft, setEditDraft] = useState({ term: "", def: "" });
+  const sorted = [...glossaryTerms || []].sort((a, b) => a.term.localeCompare(b.term));
+  function addTerm() {
+    if (!draft.term.trim() || !draft.def.trim()) return;
+    setGlossaryTerms((prev) => [...prev, { id: makeId("g"), term: draft.term.trim(), def: draft.def.trim() }]);
+    if (addLog) addLog("Glossary term added", draft.term.trim());
+    setDraft({ term: "", def: "" });
+    setAdding(false);
+  }
+  function startEdit(t) {
+    setEditId(t.id);
+    setEditDraft({ term: t.term, def: t.def });
+  }
+  function saveEdit() {
+    if (!editDraft.term.trim() || !editDraft.def.trim()) return;
+    setGlossaryTerms((prev) => prev.map((t) => t.id === editId ? { ...t, term: editDraft.term.trim(), def: editDraft.def.trim() } : t));
+    if (addLog) addLog("Glossary term edited", editDraft.term.trim());
+    setEditId(null);
+  }
+  function removeTerm(id) {
+    const t = glossaryTerms.find((x) => x.id === id);
+    if (addLog && t) addLog("Glossary term removed", t.term);
+    setGlossaryTerms((prev) => prev.filter((x) => x.id !== id));
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Reference"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Glossary")), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => setAdding((v) => !v) }, /* @__PURE__ */ React.createElement(Plus, { size: 14 }), " Add term")), adding && /* @__PURE__ */ React.createElement("div", { className: "card add-form", style: { flexDirection: "column", alignItems: "stretch", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { className: "toolbar-row" }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { maxWidth: 220 },
+      placeholder: "Term (e.g. RACI)",
+      value: draft.term,
+      onChange: (e) => setDraft((d) => ({ ...d, term: e.target.value }))
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      placeholder: "Definition",
+      value: draft.def,
+      onChange: (e) => setDraft((d) => ({ ...d, def: e.target.value })),
+      onKeyDown: (e) => e.key === "Enter" && addTerm()
+    }
+  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: addTerm }, /* @__PURE__ */ React.createElement(Check, { size: 14 }), " Save"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => {
+    setAdding(false);
+    setDraft({ term: "", def: "" });
+  } }, /* @__PURE__ */ React.createElement(X, { size: 14 })))), /* @__PURE__ */ React.createElement("div", { className: "card" }, sorted.length === 0 && /* @__PURE__ */ React.createElement(EmptyState, { icon: BookOpen, title: "No glossary terms yet", body: "Click 'Add term' to get started." }), /* @__PURE__ */ React.createElement("dl", { className: "glossary" }, sorted.map((e) => /* @__PURE__ */ React.createElement("div", { key: e.id, className: "glossary-row" }, editId === e.id ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { maxWidth: 200 },
+      value: editDraft.term,
+      onChange: (ev) => setEditDraft((d) => ({ ...d, term: ev.target.value }))
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { flex: 1, minWidth: 200 },
+      value: editDraft.def,
+      onChange: (ev) => setEditDraft((d) => ({ ...d, def: ev.target.value })),
+      onKeyDown: (ev) => ev.key === "Enter" && saveEdit()
+    }
+  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: saveEdit }, /* @__PURE__ */ React.createElement(Check, { size: 13 })), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setEditId(null) }, /* @__PURE__ */ React.createElement(X, { size: 13 }))) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("dt", null, e.term), /* @__PURE__ */ React.createElement("dd", null, e.def)), /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => startEdit(e), title: "Edit" }, /* @__PURE__ */ React.createElement(Pencil, { size: 13 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn", onClick: () => removeTerm(e.id), title: "Delete" }, /* @__PURE__ */ React.createElement(Trash2, { size: 13 }))))))));
+}
+function SettingsPage({ examName, setExamName, examNameNote, setExamNameNote, sessionDates, setSessionDates, onExportData, onClearData, addLog }) {
+  const [clearConfirm, setClearConfirm] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  function setDate(key, val) {
+    setSessionDates((prev) => ({ ...prev, [key]: val }));
+    const labels = { kickoff: "Kickoff Meeting", dryrun: "Dry Run Meeting", day1: "Day 1", day2: "Day 2", day3: "Day 3", gradesetting: "Grade Setting Meeting", retro: "Retro Meeting" };
+    if (addLog && val) addLog("Session date set", `${labels[key] || key} \u2192 ${val}`);
+  }
+  const dateFields = [
+    { key: "kickoff", label: "Kickoff Meeting", hint: "Staff dry run of Day 1 & 2" },
+    { key: "dryrun", label: "Dry Run Meeting", hint: "Staff dry run of Day 3" },
+    { key: "day1", label: "Day 1 \u2014 VBSS", hint: "Orientation & Test Preview" },
+    { key: "day2", label: "Day 2 \u2014 VBSS", hint: "TSD Development & Round 1 Ratings" },
+    { key: "day3", label: "Day 3 \u2014 VBSS", hint: "Round 2 & 3 Ratings & Adjournment" },
+    { key: "gradesetting", label: "Grade Setting Meeting", hint: "Grade setting meeting with committee" },
+    { key: "retro", label: "Retrospective Meeting", hint: "Post-VBSS team retrospective" }
+  ];
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Admin"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Settings"))), /* @__PURE__ */ React.createElement("div", { className: "card" }, /* @__PURE__ */ React.createElement("div", { className: "section-title", style: { marginTop: 0 } }, "Exam name"), /* @__PURE__ */ React.createElement("div", { className: "toolbar-row", style: { flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { maxWidth: 320 },
+      placeholder: "e.g. CLEP Biology",
+      value: examName,
+      onChange: (e) => {
+        setExamName(e.target.value);
+        clearTimeout(window.__examNameTimer);
+        if (e.target.value.trim()) window.__examNameTimer = setTimeout(() => {
+          if (addLog) addLog("Exam name updated", e.target.value.trim());
+        }, 1500);
+      }
+    }
+  )), /* @__PURE__ */ React.createElement("div", { className: "notes-hint", style: { marginTop: 6 } }, "Replaces ", /* @__PURE__ */ React.createElement("code", null, "{EXAM}"), " in task names throughout the app."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement(
+    "textarea",
+    {
+      className: "notes-ta",
+      rows: 2,
+      placeholder: "Optional note about this session's exam\u2026",
+      value: examNameNote || "",
+      onChange: (e) => setExamNameNote(e.target.value)
+    }
+  ))), /* @__PURE__ */ React.createElement("div", { className: "card" }, /* @__PURE__ */ React.createElement("div", { className: "section-title", style: { marginTop: 0 } }, "Session dates"), /* @__PURE__ */ React.createElement("div", { className: "notes-hint", style: { marginBottom: 14 } }, "Dates appear on the Dashboard and Process Flow page. Set them here once your schedule is confirmed."), /* @__PURE__ */ React.createElement("div", { className: "settings-dates-grid" }, dateFields.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.key, className: "settings-date-row" }, /* @__PURE__ */ React.createElement("div", { className: "settings-date-label" }, /* @__PURE__ */ React.createElement("span", null, f.label), /* @__PURE__ */ React.createElement("span", { className: "muted", style: { fontSize: "11px" } }, f.hint)), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "date",
+      className: "date-input settings-date-input",
+      value: sessionDates && sessionDates[f.key] || "",
+      onChange: (e) => setDate(f.key, e.target.value)
+    }
+  ))))), /* @__PURE__ */ React.createElement("div", { className: "card" }, /* @__PURE__ */ React.createElement("div", { className: "section-title", style: { marginTop: 0 } }, "App data"), /* @__PURE__ */ React.createElement("div", { className: "notes-hint", style: { marginBottom: 14 } }, "Use these tools at the end of each standard setting session to archive a record and reset the app for the next one."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "settings-action-row" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "settings-action-title" }, "Export App Data"), /* @__PURE__ */ React.createElement("div", { className: "settings-action-hint" }, "Downloads a complete JSON record of all tasks, panelists, dates, notes, RACI, and change log. Save it as your session archive.")), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", disabled: generating, onClick: () => {
+    setGenerating(true);
+    onExportData();
+    setTimeout(() => setGenerating(false), 1e3);
+  } }, /* @__PURE__ */ React.createElement(Download, { size: 14 }), " ", generating ? "Downloading\u2026" : "Export App Data")), /* @__PURE__ */ React.createElement("div", { className: "settings-action-divider" }), /* @__PURE__ */ React.createElement("div", { className: "settings-action-row" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "settings-action-title", style: { color: "var(--danger)" } }, "Clear App Data"), /* @__PURE__ */ React.createElement("div", { className: "settings-action-hint" }, "Resets all shared data so the app is ready for a new session. ", /* @__PURE__ */ React.createElement("strong", null, "This cannot be undone."), " Export first.")), !clearConfirm ? /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: () => setClearConfirm(true) }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }), " Clear App Data") : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "muted", style: { fontSize: "12px" } }, "Are you sure?"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: () => {
+    onClearData();
+    setClearConfirm(false);
+  } }, "Yes, clear everything"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setClearConfirm(false) }, "Cancel"))))));
+}
+const STYLES = `
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap');
+
+.app {
+  --navy: #4A3880;
+  --navy2: #382B6A;
+  --accent: #7C3AED;
+  --accent-soft: #EDE9FC;
+  --paper: #F7F5FB;
+  --surface: #FFFFFF;
+  --ink: #2B2244;
+  --muted: #766D8E;
+  --border: #E5DFF5;
+  --danger: #B3382C;
+  --green: #2F9E44;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  min-height: 640px;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.app * { box-sizing: border-box; }
+.app :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- Top gradient bar ---- */
+.topbar {
+  background: linear-gradient(90deg, #4A3880 0%, #7C3AED 60%, #A78BFA 100%);
+  color: #fff;
+  padding: 8px 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+.topbar-title { color: rgba(255,255,255,0.92); flex: 1; }
+.topbar-user { background: rgba(255,255,255,0.15); border: none; border-radius: 99px; color: #fff; cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 500; padding: 3px 10px 3px 7px; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.topbar-user:hover { background: rgba(255,255,255,0.25); }
+.topbar-user-icon { font-size: 13px; }
+.cl-user { font-size: 10.5px; color: var(--accent); margin-top: 1px; font-weight: 500; }
+
+/* ---- Profile modal ---- */
+.profile-modal { max-width: 400px; }
+.profile-preview { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.profile-avatar-lg { width: 64px; height: 64px; border-radius: 50%; background: var(--accent-soft); display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; border: 2px solid var(--border); }
+.profile-tabs { display: flex; gap: 6px; }
+.profile-tab { font-family: inherit; font-size: 12px; padding: 5px 12px; border-radius: 99px; border: 1px solid var(--border); background: #fff; color: var(--muted); cursor: pointer; }
+.profile-tab:hover { border-color: var(--accent); color: var(--accent); }
+.profile-tab-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.emoji-grid { display: grid; grid-template-columns: repeat(6,1fr); gap: 6px; padding: 4px 0; max-height: 160px; overflow-y: auto; }
+.emoji-btn { font-size: 20px; background: #fff; border: 2px solid transparent; border-radius: 7px; cursor: pointer; padding: 4px; line-height: 1; text-align: center; }
+.emoji-btn:hover { background: var(--accent-soft); }
+.emoji-btn-active { border-color: var(--accent); background: var(--accent-soft); }
+
+/* ---- Body row (sidebar + main) ---- */
+.body-row { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+/* ---- Sidebar ---- */
+.sidebar {
+  width: 210px;
+  flex-shrink: 0;
+  background: var(--navy);
+  color: #E5DFF5;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  transition: width 0.18s ease;
+}
+.sidebar-sm { width: 50px; }
+
+.sb-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  min-height: 54px;
+  gap: 8px;
+}
+.sb-brand { flex: 1; min-width: 0; }
+.sb-brand-row { display: flex; align-items: baseline; gap: 3px; }
+.sb-clep-word { font-family: 'Roboto Slab', serif; font-size: 17px; font-weight: 700; color: #fff; letter-spacing: 0.02em; }
+.sb-clep-dot  { color: #F0C040; font-size: 20px; line-height: 1; }
+.sb-brand-sub { font-size: 9.5px; color: rgba(255,255,255,0.38); margin-top: 1px; text-transform: uppercase; letter-spacing: 0.07em; }
+.sb-collapse-btn { background: transparent; border: none; color: rgba(255,255,255,0.5); cursor: pointer; padding: 4px; border-radius: 5px; flex-shrink: 0; }
+.sb-collapse-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+.sb-nav { flex: 1; padding: 8px 7px; overflow-y: auto; }
+.sb-group { margin-bottom: 10px; }
+.sb-group-label {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: rgba(255,255,255,0.3); padding: 0 6px; margin-bottom: 2px; font-weight: 700;
+}
+.sb-item {
+  width: 100%; display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+  color: rgba(255,255,255,0.62); cursor: pointer; padding: 6px 7px; border-radius: 6px;
+  font-size: 12.5px; text-align: left; font-family: inherit; margin-bottom: 1px;
+}
+.sb-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.sb-item-active { background: rgba(167,139,250,0.22); color: #D8CCFF; }
+.sb-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-item-sub { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.38); }
+
+.sb-footer {
+  padding: 9px 13px; font-size: 10px; color: rgba(255,255,255,0.38);
+  border-top: 1px solid rgba(255,255,255,0.1); line-height: 1.6;
+}
+.save-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.save-ok { background: #4ADE80; }
+.save-pending { background: #FACC15; }
+.sb-footer-link { color: var(--accent); cursor: pointer; font-size: 9.5px; }
+
+/* ---- Main ---- */
+.main { flex: 1; min-width: 0; overflow-y: auto; background: var(--paper); }
+.loading { padding: 60px; text-align: center; color: var(--muted); }
+
+/* ---- Page ---- */
+.page { padding: 16px 22px 32px; }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; gap: 12px; }
+.eyebrow { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
+.h1 { font-family: 'Roboto Slab', serif; font-size: 20px; font-weight: 600; color: var(--navy); margin: 0; }
+.h1-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.section-title { font-family: 'Roboto Slab', serif; font-size: 13.5px; font-weight: 600; color: var(--navy); margin: 14px 0 7px; }
+.muted { color: var(--muted); font-size: 12.5px; }
+.error-txt { color: var(--danger); font-size: 12.5px; margin-top: 4px; }
+
+/* ---- Cards ---- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; margin-bottom: 10px; }
+
+/* ---- Collapsible ---- */
+.collapsible { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 8px; overflow: hidden; }
+.collapsible-hdr {
+  width: 100%; display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+  padding: 10px 14px; cursor: pointer; font-family: inherit; text-align: left;
+}
+.collapsible-hdr:hover { background: #FAF8FF; }
+.collapsible-chevron { color: var(--muted); flex-shrink: 0; }
+.collapsible-title { font-family: 'Roboto Slab', serif; font-weight: 600; font-size: 13px; color: var(--navy); flex: 1; }
+.collapsible-sub { font-size: 11px; color: var(--muted); }
+.collapsible-badge {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--muted);
+  background: #F0EDF9; border-radius: 99px; padding: 1px 8px;
+}
+.collapsible-body { padding: 0 12px 10px; }
+
+/* ---- Toolbar ---- */
+.toolbar-card { display: flex; flex-direction: column; gap: 7px; }
+.toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.toolbar-wrap { row-gap: 7px; }
+
+/* ---- Buttons ---- */
+.btn {
+  display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
+  font-size: 12px; font-weight: 500; padding: 5px 11px; border-radius: 6px;
+  border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+}
+.btn-primary  { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #6D28D9; }
+.btn-secondary{ background: #fff; color: var(--navy); border-color: var(--border); }
+.btn-secondary:hover { background: #F5F3FC; }
+.btn-ghost { background: transparent; color: var(--muted); }
+.btn-ghost:hover { background: #F5F3FC; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger:hover { background: #96291F; }
+.icon-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 5px; display: inline-flex; }
+.icon-btn:hover { background: #F0EDF9; color: var(--danger); }
+
+/* ---- Inputs ---- */
+.input { font-family: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: #fff; color: var(--ink); flex: 1; min-width: 110px; }
+.select { font-family: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: #fff; color: var(--ink); cursor: pointer; }
+.select-wrap { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.select-label { white-space: nowrap; }
+.search-wrap { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; color: var(--muted); }
+.search-input { border: none; outline: none; font-family: inherit; font-size: 12.5px; flex: 1; background: transparent; }
+.notes-ta { width: 100%; font-family: inherit; font-size: 12.5px; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--border); resize: vertical; color: var(--ink); }
+.notes-label { font-size: 12px; font-weight: 600; color: var(--navy); margin-bottom: 6px; }
+.notes-hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+
+/* ---- Progress ---- */
+.prog-track { width: 100%; height: 5px; background: #EAE6F5; border-radius: 99px; overflow: hidden; }
+.prog-fill   { height: 100%; background: var(--accent); border-radius: 99px; transition: width .3s ease; }
+.ring-txt    { font-size: 10px; font-weight: 700; fill: var(--navy); font-family: 'IBM Plex Mono', monospace; }
+
+/* ---- Role filter ---- */
+.role-filter-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.rf-chip {
+  font-family: inherit; font-size: 11.5px; font-weight: 500; padding: 3px 11px;
+  border-radius: 99px; border: 1px solid var(--border); background: #fff; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.rf-chip:hover { border-color: var(--accent); color: var(--accent); }
+.rf-active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.rf-chip-sm { font-size: 11px; padding: 2px 8px; }
+
+/* ---- Role badges ---- */
+.cb { display: inline-flex; align-items: center; border-radius: 99px; font-weight: 600; white-space: nowrap; }
+.cb-muted { background: #F0EDF9; color: var(--muted); border: 1px solid var(--border); font-size: 11.5px; padding: 2px 8px; }
+
+/* ---- Tasks ---- */
+.task-list { padding: 2px 0; }
+.task-row-wrap { border-bottom: 1px solid #F0EDF9; }
+.task-row-wrap:last-child { border-bottom: none; }
+.task-row-wrap.task-done .task-text { color: var(--muted); text-decoration: line-through; }
+.task-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 8px; flex-wrap: wrap;
+}
+.task-row:hover { background: #FAF8FF; border-radius: 6px; }
+.task-note-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 8px 7px 35px;
+}
+.task-note-label {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); white-space: nowrap; flex-shrink: 0;
+}
+.task-note-input {
+  font-family: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 9px; background: var(--accent-soft); color: var(--ink); flex: 1;
+  min-width: 200px;
+}
+.task-note-input:focus { outline: none; border-color: var(--accent); }
+.assignee-label { color: #C2255C; }
+.assignee-input { background: #FEF0F5; border-color: #F5C0D0; }
+.assignee-input:focus { border-color: #C2255C; }
+
+/* ---- Role name grid in TaskEditor ---- */
+.role-name-grid { display: flex; flex-direction: column; gap: 7px; }
+.role-name-row { display: flex; align-items: center; gap: 10px; }
+.role-name-input { max-width: 280px; }
+
+/* ---- Settings action rows ---- */
+.settings-action-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.settings-action-title { font-size: 13px; font-weight: 600; color: var(--navy); margin-bottom: 3px; }
+.settings-action-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; max-width: 480px; }
+.settings-action-divider { height: 1px; background: var(--border); }
+.task-main { display: flex; align-items: center; gap: 9px; cursor: pointer; flex: 1; min-width: 200px; }
+.task-meta  { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.badge-group{ display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.task-done .task-text { color: var(--muted); text-decoration: line-through; }
+.task-cb   { width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.task-text { flex: 1; font-size: 13px; line-height: 1.4; }
+.due-date-field {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: #fff; padding: 3px 8px; cursor: pointer;
+}
+.due-date-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,58,237,.1); }
+.due-date-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); white-space: nowrap;
+}
+.due-date-input {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px;
+  border: none; outline: none; background: transparent;
+  color: var(--ink); cursor: pointer; min-width: 110px;
+}
+
+/* ---- Dashboard ---- */
+.stat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.stat-card {
+  flex: 1; min-width: 90px; text-align: left; background: #fff; border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; cursor: pointer; font-family: inherit; border-top: 3px solid var(--accent);
+}
+.stat-card:hover { border-color: var(--accent); }
+.stat-label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.stat-val { font-family: 'Roboto Slab', serif; font-size: 19px; font-weight: 600; color: var(--navy); margin: 2px 0 5px; }
+.dash-flow { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-bottom: 12px; }
+.dash-flow-btn {
+  background: var(--accent-soft); border: 1px solid #D8CCFF; border-radius: 7px;
+  padding: 7px 12px; text-align: left; cursor: pointer; font-family: inherit; min-width: 100px;
+}
+.dash-flow-btn:hover { background: #E4D9FC; }
+.dash-flow-label { font-family: 'Roboto Slab', serif; font-weight: 600; font-size: 11.5px; color: var(--navy); }
+.dash-flow-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
+.dash-arrow { color: #B09FDC; flex-shrink: 0; }
+.quicklinks { display: flex; gap: 7px; flex-wrap: wrap; }
+
+/* ---- Process Flow page ---- */
+.phase-date-badge {
+  display:inline-flex; align-items:center; gap:8px; border:1px solid; border-radius:8px;
+  padding:6px 12px; background:#FAF8FF; font-family:inherit;
+}
+.phase-date-icon { font-size:14px; flex-shrink:0; }
+.phase-date-label { font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600; line-height:1.2; }
+.phase-date-val { font-family:'IBM Plex Mono', monospace; font-size:12px; font-weight:700; line-height:1.3; margin-top:1px; }
+
+.flow-card { overflow-x: auto; }
+.flow-row { display: flex; align-items: flex-start; gap: 4px; min-width: max-content; padding: 2px 0; }
+.flow-node {
+  background: var(--accent-soft); border: 1px solid #D8CCFF; border-radius: 8px;
+  padding: 8px 11px; text-align: left; cursor: pointer; font-family: inherit; min-width: 100px;
+}
+.flow-node:hover { background: #E4D9FC; }
+.flow-node-num { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: var(--accent); margin-bottom: 3px; }
+.flow-node-label { font-family: 'Roboto Slab', serif; font-weight: 600; font-size: 11.5px; color: var(--navy); }
+.flow-node-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
+.flow-arrow { color: #B09FDC; font-size: 13px; flex-shrink: 0; padding-top: 15px; }
+.flow-detail-row { display: flex; align-items: flex-start; gap: 7px; flex-wrap: wrap; }
+.flow-detail-node { background: #FAF8FF; border: 1px solid var(--border); border-radius: 7px; padding: 8px 11px; flex: 1; min-width: 140px; }
+.flow-detail-label { font-weight: 600; font-size: 12px; color: var(--navy); }
+.flow-detail-sub { font-size: 10.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+.flow-arrow-sm { color: #B09FDC; font-size: 12px; padding-top: 12px; flex-shrink: 0; }
+
+/* ---- Table ---- */
+.tbl-card { padding: 0; overflow: hidden; }
+.tbl-scroll { overflow-x: auto; }
+.tbl { border-collapse: collapse; width: 100%; font-size: 12px; }
+.tbl thead th {
+  text-align: left; padding: 7px 10px; background: #F5F2FB; color: var(--muted);
+  font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: .03em;
+  white-space: nowrap; border-bottom: 1px solid var(--border); position: sticky; top: 0;
+}
+.tbl tbody td { padding: 4px 8px; border-bottom: 1px solid #F0EDF9; white-space: nowrap; }
+.tbl tbody tr:hover { background: #FAF8FF; }
+.tc { text-align: center; }
+.cell-input { font-family: inherit; font-size: 12px; border: 1px solid transparent; background: transparent; padding: 3px 5px; border-radius: 4px; width: 100%; min-width: 80px; color: var(--ink); }
+.cell-input:hover, .cell-input:focus { border-color: var(--border); background: #fff; }
+.yesno { font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; border-radius: 99px; padding: 2px 9px; border: 1px solid transparent; cursor: pointer; }
+.yn-yes { background: #E6F4EA; color: #2F9E44; border-color: #BFE3C8; }
+.yn-no  { background: #F3F1F9; color: var(--muted); border-color: var(--border); }
+.add-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.col-menu {
+  position: absolute; top: 110%; left: 0; background: #fff; border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px; box-shadow: 0 8px 20px rgba(30,20,60,.11);
+  z-index: 20; min-width: 180px; max-height: 240px; overflow-y: auto;
+}
+.col-menu-item { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 5px; border-radius: 4px; }
+.col-menu-item:hover { background: #F5F2FB; }
+
+/* ---- RACI ---- */
+.raci-legend { display: flex; gap: 9px; flex-wrap: wrap; align-items: stretch; padding: 10px 14px; }
+.raci-legend-item { display: flex; align-items: center; gap: 7px; padding: 5px 9px; border-radius: 6px; background: #FAF8FF; font-size: 12px; color: var(--muted); }
+.raci-th { cursor: pointer; user-select: none; }
+.raci-th-hl { background: #EDE9FC; }
+.raci-td-hl { background: #F5F2FC; }
+.raci-row-hl { background: #FAF8FF; }
+.raci-tbl .tbl tbody td { vertical-align: middle; }
+.raci-cell-btn { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 700; border-radius: 6px; padding: 3px 11px; border: 1px solid transparent; cursor: pointer; background: #F3F1F9; color: var(--muted); min-width: 38px; }
+.raci-cell-btn:hover { border-color: var(--accent); }
+
+/* ---- Session dates banner on dashboard ---- */
+.dates-banner { padding: 14px 16px; margin-bottom: 14px; }
+.dates-banner-title { font-family: 'Roboto Slab', serif; font-size: 13px; font-weight: 600; color: var(--navy); margin-bottom: 10px; }
+.dates-banner-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.date-pill { background: #FAF8FF; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; min-width: 130px; }
+.date-pill-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.date-pill-val { font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; margin-top: 3px; }
+.dates-banner-empty { display: flex; align-items: center; gap: 6px; padding: 12px 16px; }
+.btn-inline-link { background: transparent; border: none; color: var(--accent); cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0; }
+.btn-inline-link:hover { text-decoration: underline; }
+
+/* ---- Process flow professional cards ---- */
+.flow-pro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.flow-pro-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 0;
+}
+.flow-pro-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.flow-pro-num {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700;
+  padding: 3px 8px; border-radius: 5px; flex-shrink: 0; line-height: 1.4;
+}
+.flow-pro-titles { flex: 1; min-width: 0; }
+.flow-pro-label { font-family: 'Roboto Slab', serif; font-weight: 600; font-size: 13.5px; color: var(--navy); line-height: 1.3; }
+.flow-pro-sub { font-size: 11px; color: var(--muted); margin-top: 2px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+.flow-pro-date { font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; white-space: nowrap; margin-top: 2px; flex-shrink: 0; }
+.flow-pro-prog { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.flow-pro-pct { font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; margin-top: 2px; }
+.flow-pro-divider { height: 1px; background: var(--border); margin: 0 0 10px; }
+.flow-pro-section-label {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); font-weight: 700; margin-bottom: 6px;
+}
+.flow-pro-list { margin: 0 0 10px; padding-left: 16px; }
+.flow-pro-list li { font-size: 12px; color: var(--ink); line-height: 1.5; margin-bottom: 3px; }
+.flow-pro-milestone {
+  display: flex; align-items: flex-start; gap: 7px; border: 1px solid;
+  border-radius: 7px; padding: 7px 10px; font-size: 11.5px; color: var(--ink);
+  margin-bottom: 10px; line-height: 1.4;
+}
+.flow-pro-milestone-icon { font-size: 12px; flex-shrink: 0; margin-top: 1px; }
+.flow-pro-roles { font-size: 10.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.4; }
+.flow-pro-link {
+  background: transparent; border: none; cursor: pointer; font-family: inherit;
+  font-size: 12px; font-weight: 600; padding: 0; text-align: left; margin-top: auto;
+}
+.flow-pro-link:hover { text-decoration: underline; }
+
+/* ---- Settings date inputs ---- */
+.settings-dates-grid { display: flex; flex-direction: column; gap: 8px; }
+.settings-date-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #F0EDF9; }
+.settings-date-row:last-child { border-bottom: none; }
+.settings-date-label { display: flex; flex-direction: column; gap: 2px; }
+.settings-date-label span:first-child { font-size: 13px; font-weight: 500; color: var(--ink); }
+.settings-date-input { font-size: 13px; padding: 5px 9px; }
+
+/* ---- Documents ---- */
+.doc-cat-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.doc-cat-btn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 7px;
+  border: 1px solid var(--border); background: #fff; color: var(--muted); cursor: pointer;
+  font-family: inherit; font-size: 12px; font-weight: 500;
+}
+.doc-cat-btn:hover { border-color: var(--accent); color: var(--accent); }
+.doc-cat-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.doc-cat-count { background: var(--accent); color: #fff; border-radius: 99px; font-size: 9.5px; padding: 1px 5px; font-weight: 700; }
+.doc-row { display: flex; align-items: center; gap: 10px; padding: 8px 13px; border-bottom: 1px solid #F0EDF9; }
+.doc-row:last-child { border-bottom: none; }
+.doc-row:hover { background: #FAF8FF; }
+.doc-icon { color: var(--accent); flex-shrink: 0; }
+.doc-info { flex: 1; min-width: 0; }
+.doc-title { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+.doc-title a { color: var(--accent); text-decoration: none; }
+.doc-title a:hover { text-decoration: underline; }
+.doc-url { font-size: 10.5px; color: var(--muted); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Admin ---- */
+.role-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.role-chip { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; background: #FAF8FF; }
+.role-chip-blurb { font-size: 11px; color: var(--muted); max-width: 170px; }
+.admin-task-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 3px; border-bottom: 1px solid #F0EDF9; flex-wrap: wrap; }
+.admin-task-left { display: flex; flex: 1; min-width: 200px; }
+.admin-task-txt { flex: 1; font-size: 12.5px; line-height: 1.4; }
+.admin-role-pick { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+
+/* ---- Glossary ---- */
+.glossary { }
+.glossary-row { padding: 8px 0; border-bottom: 1px solid #F0EDF9; }
+.glossary-row:last-child { border-bottom: none; }
+.glossary-row dt { font-family: 'Roboto Slab', serif; font-weight: 600; color: var(--navy); font-size: 12.5px; }
+.glossary-row dd { margin: 2px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* ---- Modal / Toast ---- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(20,15,40,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal-box { background: #fff; border-radius: 10px; padding: 18px; max-width: 350px; width: 100%; }
+.modal-title { font-family: 'Roboto Slab', serif; font-size: 14px; margin: 0 0 7px; color: var(--navy); }
+.modal-body  { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin: 0 0 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: var(--navy); color: #fff; padding: 8px 14px; border-radius: 7px;
+  display: flex; align-items: center; gap: 12px; font-size: 12.5px; z-index: 40;
+  box-shadow: 0 6px 20px rgba(0,0,0,.16);
+}
+.toast-undo { background: transparent; border: none; color: #C4B5FD; cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.empty-state { text-align: center; padding: 24px 14px; color: var(--muted); }
+.empty-title { font-size: 12.5px; font-weight: 600; color: var(--navy); margin: 7px 0 3px; }
+.empty-body  { font-size: 11.5px; margin: 0; }
+
+
+/* ---- Change log ---- */
+.changelog-card { padding: 4px 16px 8px; }
+.cl-row { display: flex; gap: 12px; padding: 8px 0; }
+.cl-row-last .cl-line { display: none; }
+.cl-spine { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 14px; padding-top: 3px; }
+.cl-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.cl-line { width: 1px; flex: 1; background: var(--border); margin-top: 4px; min-height: 12px; }
+.cl-body { flex: 1; min-width: 0; padding-bottom: 6px; }
+.cl-action-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cl-action { font-size: 12px; font-weight: 600; }
+.cl-ts { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); flex-shrink: 0; }
+.cl-detail { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 720px) {
+  .page { padding: 10px 10px 22px; }
+  .sidebar { width: 48px; }
+  .sb-brand, .sb-group-label, .sb-item-label, .sb-item-sub, .sb-footer { display: none; }
+}
+`;
+const PRESET_EMOJIS = ["\u{1F98A}", "\u{1F43C}", "\u{1F428}", "\u{1F438}", "\u{1F981}", "\u{1F42F}", "\u{1F98B}", "\u{1F419}", "\u{1F9A9}", "\u{1F99A}", "\u{1F99C}", "\u{1F422}", "\u{1F994}", "\u{1F9A6}", "\u{1F43A}", "\u{1F99D}", "\u{1F43B}", "\u{1F42E}", "\u{1F984}", "\u{1F427}", "\u{1F988}", "\u{1F9AD}", "\u{1F43F}\uFE0F", "\u{1F98E}"];
+function AvatarDisplay({ avatar, size = 28 }) {
+  if (!avatar) return /* @__PURE__ */ React.createElement("span", { style: { fontSize: size * 0.85 + "px" } }, "\u{1F464}");
+  if (avatar.startsWith("data:")) return /* @__PURE__ */ React.createElement("img", { src: avatar, style: { width: size, height: size, borderRadius: "50%", objectFit: "cover" }, alt: "avatar" });
+  return /* @__PURE__ */ React.createElement("span", { style: { fontSize: size * 0.85 + "px" } }, avatar);
+}
+function UserNamePrompt({ onSave, initialName = "", initialAvatar = "" }) {
+  const [val, setVal] = useState(initialName);
+  const [avatar, setAvatar] = useState(initialAvatar);
+  const [tab, setTab] = useState("emoji");
+  const fileRef = useRef(null);
+  function handleUpload(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => setAvatar(reader.result);
+    reader.readAsDataURL(file);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "modal-overlay" }, /* @__PURE__ */ React.createElement("div", { className: "modal-box profile-modal", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("h3", { className: "modal-title" }, "Your Profile"), /* @__PURE__ */ React.createElement("p", { className: "modal-body", style: { marginBottom: 16 } }, "Set your name and avatar. This is saved to your browser only."), /* @__PURE__ */ React.createElement("div", { className: "profile-preview" }, /* @__PURE__ */ React.createElement("div", { className: "profile-avatar-lg" }, /* @__PURE__ */ React.createElement(AvatarDisplay, { avatar, size: 56 })), /* @__PURE__ */ React.createElement("div", { className: "profile-tabs" }, /* @__PURE__ */ React.createElement("button", { className: `profile-tab ${tab === "emoji" ? "profile-tab-active" : ""}`, onClick: () => setTab("emoji") }, "Emoji"), /* @__PURE__ */ React.createElement("button", { className: `profile-tab ${tab === "upload" ? "profile-tab-active" : ""}`, onClick: () => setTab("upload") }, "Upload photo"))), tab === "emoji" && /* @__PURE__ */ React.createElement("div", { className: "emoji-grid" }, PRESET_EMOJIS.map((e) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: e,
+      className: `emoji-btn ${avatar === e ? "emoji-btn-active" : ""}`,
+      onClick: () => setAvatar(avatar === e ? "" : e)
+    },
+    e
+  ))), tab === "upload" && /* @__PURE__ */ React.createElement("div", { style: { textAlign: "center", padding: "12px 0" } }, /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", onChange: handleUpload, style: { display: "none" } }), /* @__PURE__ */ React.createElement("button", { className: "btn btn-secondary", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(Upload, { size: 14 }), " Choose image"), avatar && avatar.startsWith("data:") && /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", style: { marginLeft: 8 }, onClick: () => setAvatar("") }, "Remove")), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      style: { width: "100%", margin: "14px 0 16px" },
+      placeholder: "Your name (e.g. Yuan Ge)",
+      value: val,
+      onChange: (e) => setVal(e.target.value),
+      onKeyDown: (e) => e.key === "Enter" && val.trim() && onSave(val.trim(), avatar),
+      autoFocus: true
+    }
+  ), /* @__PURE__ */ React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", style: { width: "100%" }, disabled: !val.trim(), onClick: () => val.trim() && onSave(val.trim(), avatar) }, "Save profile"))));
+}
+function ChangeLog({ changelog, setChangelog, examName }) {
+  const [filter, setFilter] = useState("");
+  const [confirmClear, setConfirmClear] = useState(false);
+  const norm = filter.trim().toLowerCase();
+  const filtered = changelog.filter(
+    (e) => !norm || (e.action + e.detail).toLowerCase().includes(norm)
+  );
+  function fmt(ts) {
+    try {
+      const d = new Date(ts);
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) + " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    } catch (e) {
+      return ts;
+    }
+  }
+  const ACTION_COLORS = {
+    "Task completed": "#2F9E44",
+    "Task unchecked": "#9CA3AF",
+    "Notes updated": "#3E63DD",
+    "Due date set": "#7C3AED",
+    "Panelist added": "#2F9E44",
+    "Panelist removed": "#B3382C",
+    "Link added": "#0D7490",
+    "File(s) uploaded": "#0D7490",
+    "App data exported": "#0D7490",
+    "App data cleared": "#B3382C",
+    "Session date set": "#7C3AED"
+  };
+  function exportLog() {
+    const lines = ["CLEP VBSS Change Log", "Exam: " + (examName || "CLEP"), "Exported: " + (/* @__PURE__ */ new Date()).toLocaleString(), "", "Timestamp,Action,Detail"];
+    changelog.forEach((e) => lines.push(`"${fmt(e.ts)}","${e.action}","${e.detail}"`));
+    const csv = lines.join("\n");
+    const encoded = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    const a = document.createElement("a");
+    a.href = encoded;
+    a.download = `CLEP_VBSS_ChangeLog_${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+  function clearLog() {
+    setChangelog([]);
+    storageSet(CHANGELOG_KEY, JSON.stringify([]), true);
+    setConfirmClear(false);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "page" }, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "eyebrow" }, "Tracking"), /* @__PURE__ */ React.createElement("h1", { className: "h1" }, "Change Log")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, !confirmClear ? /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmClear(true) }, /* @__PURE__ */ React.createElement(Trash2, { size: 13 }), " Clear log") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: clearLog }, "Confirm clear"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmClear(false) }, "Cancel")))), /* @__PURE__ */ React.createElement("div", { className: "card toolbar-card" }, /* @__PURE__ */ React.createElement("div", { className: "search-wrap" }, /* @__PURE__ */ React.createElement(Search, { size: 13 }), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "search-input",
+      placeholder: "Filter by action or detail\u2026",
+      value: filter,
+      onChange: (e) => setFilter(e.target.value)
+    }
+  )), /* @__PURE__ */ React.createElement("span", { className: "muted" }, filtered.length, " entr", filtered.length === 1 ? "y" : "ies", filter ? " matching" : "", changelog.length > 0 && !filter ? ` \xB7 ${changelog.length} total` : "")), filtered.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "card" }, /* @__PURE__ */ React.createElement(
+    EmptyState,
+    {
+      icon: Circle,
+      title: "No changes recorded yet",
+      body: "Actions like completing tasks, setting dates, adding panelists, and uploading documents will appear here automatically."
+    }
+  )) : /* @__PURE__ */ React.createElement("div", { className: "card changelog-card" }, filtered.map((entry, i) => {
+    const color = ACTION_COLORS[entry.action] || "#64748B";
+    const isLast = i === filtered.length - 1;
+    return /* @__PURE__ */ React.createElement("div", { key: entry.id, className: `cl-row ${isLast ? "cl-row-last" : ""}` }, /* @__PURE__ */ React.createElement("div", { className: "cl-spine" }, /* @__PURE__ */ React.createElement("div", { className: "cl-dot", style: { background: color } }), !isLast && /* @__PURE__ */ React.createElement("div", { className: "cl-line" })), /* @__PURE__ */ React.createElement("div", { className: "cl-body" }, /* @__PURE__ */ React.createElement("div", { className: "cl-action-row" }, /* @__PURE__ */ React.createElement("span", { className: "cl-action", style: { color } }, entry.action), /* @__PURE__ */ React.createElement("span", { className: "cl-ts" }, fmt(entry.ts))), /* @__PURE__ */ React.createElement("div", { className: "cl-detail" }, entry.detail), entry.user && /* @__PURE__ */ React.createElement("div", { className: "cl-user" }, "\u2014 ", entry.user)));
+  })));
+}
+function App() {
+  const [page, setPage] = useState("dashboard");
+  const [ready, setReady] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("saved");
+  const initP = defaultPersonal();
+  const [completed, setCompleted] = useState(() => {
+    const c = {};
+    PHASES.forEach((p) => {
+      c[p.key] = {};
+    });
+    return c;
+  });
+  const [notes, setNotes] = useState(initP.notes);
+  const [trackerColumns, setTrackerColumns] = useState(() => Object.fromEntries(ALL_TRACKER_COLS.map((c) => [c.key, true])));
+  const [taskNotes, setTaskNotes] = useState({});
+  const [globalRoleFilter, setGlobalRoleFilter] = useState([]);
+  const [roleNames, setRoleNames] = useState({});
+  const [changelog, setChangelog] = useState([]);
+  const [docxReady, setDocxReady] = useState(() => !!window.docx);
+  useEffect(() => {
+    if (window.docx) {
+      setDocxReady(true);
+      return;
+    }
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "script";
+    link.href = "https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js";
+    document.head.appendChild(link);
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js";
+    s.async = true;
+    s.onload = () => setDocxReady(true);
+    document.head.appendChild(s);
+  }, []);
+  const [userName, setUserName] = useState("");
+  const [userAvatar, setUserAvatar] = useState("");
+  const userNameRef = useRef("");
+  const [showNamePrompt, setShowNamePrompt] = useState(false);
+  const [panelists, setPanelists] = useState([]);
+  const [roles, setRoles] = useState(() => DEFAULT_ROLES.map((r) => ({ ...r })));
+  const [taskAssignments, setTaskAssignments] = useState({});
+  const [taskTexts, setTaskTexts] = useState({});
+  const [taskDueDates, setTaskDueDates] = useState({});
+  const [raciData, setRaciData] = useState(DEFAULT_RACI.map((r) => ({ ...r, raci: { ...r.raci } })));
+  const [examName, setExamName] = useState("CLEP");
+  const [examNameNote, setExamNameNote] = useState("");
+  const [docs, setDocs] = useState([]);
+  const [sessionDates, setSessionDates] = useState({ kickoff: "", dryrun: "", day1: "", day2: "", day3: "", gradesetting: "", retro: "" });
+  const [glossaryTerms, setGlossaryTerms] = useState(() => DEFAULT_GLOSSARY_TERMS.map((t) => ({ ...t })));
+  const lastPersonalRef = useRef(null);
+  const lastSharedRef = useRef(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const pDef = defaultPersonal();
+      const pRaw = await storageGet(PERSONAL_KEY, false);
+      const pParsed = safeParse(pRaw, pDef);
+      const mNotes = { ...pDef.notes, ...pParsed.notes || {} };
+      let sRaw = await storageGet(SHARED_KEY, true);
+      let sParsed = safeParse(sRaw, null);
+      if (!sParsed) {
+        sParsed = defaultShared();
+        await storageSet(SHARED_KEY, JSON.stringify(sParsed), true);
+      }
+      const rawRoles = Array.isArray(sParsed.roles) && sParsed.roles.length ? sParsed.roles : DEFAULT_ROLES.map((r) => ({ ...r }));
+      const defaultAbbrMap = Object.fromEntries(DEFAULT_ROLES.map((r) => [r.id, r.abbr]));
+      const mRoles = rawRoles.map((r) => defaultAbbrMap[r.id] !== void 0 ? { ...r, abbr: defaultAbbrMap[r.id] } : r);
+      const cRaw = await storageGet(COMPLETED_KEY, true);
+      const mComp = safeParse(cRaw, null) && typeof safeParse(cRaw, null) === "object" ? safeParse(cRaw, null) : (() => {
+        const c = {};
+        PHASES.forEach((p) => {
+          c[p.key] = {};
+        });
+        return c;
+      })();
+      const panRaw = await storageGet(PANELISTS_KEY, true);
+      const mPan = Array.isArray(safeParse(panRaw, null)) ? safeParse(panRaw, []) : [];
+      const datesRaw = await storageGet(DATES_KEY, true);
+      const mDates = safeParse(datesRaw, null) && typeof safeParse(datesRaw, null) === "object" ? safeParse(datesRaw, null) : { kickoff: "", dryrun: "", day1: "", day2: "", day3: "", gradesetting: "", retro: "" };
+      const docsRaw = await storageGet(DOCS_KEY, true);
+      const mDocs2 = Array.isArray(safeParse(docsRaw, null)) ? safeParse(docsRaw, []) : [];
+      const mAsgn = sParsed.taskAssignments && typeof sParsed.taskAssignments === "object" ? sParsed.taskAssignments : {};
+      const mTxt = sParsed.taskTexts && typeof sParsed.taskTexts === "object" ? sParsed.taskTexts : {};
+      const mDue = sParsed.taskDueDates && typeof sParsed.taskDueDates === "object" ? sParsed.taskDueDates : {};
+      const mTaskNotes = sParsed.taskNotes && typeof sParsed.taskNotes === "object" ? sParsed.taskNotes : {};
+      const mCols = sParsed.trackerColumns && typeof sParsed.trackerColumns === "object" ? sParsed.trackerColumns : Object.fromEntries(ALL_TRACKER_COLS.map((c) => [c.key, true]));
+      const mRaci = Array.isArray(sParsed.raciData) && sParsed.raciData.length ? sParsed.raciData : DEFAULT_RACI.map((r) => ({ ...r, raci: { ...r.raci } }));
+      const mExam = typeof sParsed.examName === "string" && sParsed.examName ? sParsed.examName : "CLEP";
+      const mNote = typeof sParsed.examNameNote === "string" ? sParsed.examNameNote : "";
+      const mDocs = Array.isArray(sParsed.docs) ? sParsed.docs : [];
+      const mRoleNames = sParsed.roleNames && typeof sParsed.roleNames === "object" ? sParsed.roleNames : {};
+      const clRaw = await storageGet(CHANGELOG_KEY, true);
+      const mChangelog = Array.isArray(safeParse(clRaw, null)) ? safeParse(clRaw, []) : [];
+      const storedGloss = Array.isArray(sParsed.glossaryTerms) && sParsed.glossaryTerms.length ? sParsed.glossaryTerms : [];
+      const storedIds = new Set(storedGloss.map((t) => t.id));
+      const missingTerms = DEFAULT_GLOSSARY_TERMS.filter((t) => !storedIds.has(t.id));
+      const mGloss = storedGloss.length ? [...storedGloss, ...missingTerms] : DEFAULT_GLOSSARY_TERMS.map((t) => ({ ...t }));
+      if (cancelled) return;
+      setNotes(mNotes);
+      setCompleted(mComp);
+      setTrackerColumns(mCols);
+      setTaskNotes(mTaskNotes);
+      setPanelists(mPan);
+      setRoles(mRoles);
+      setTaskAssignments(mAsgn);
+      setTaskTexts(mTxt);
+      setTaskDueDates(mDue);
+      setRaciData(mRaci);
+      setExamName(mExam);
+      setExamNameNote(mNote);
+      setDocs(mDocs2);
+      setRoleNames(mRoleNames);
+      setSessionDates(mDates);
+      setGlossaryTerms(mGloss);
+      setChangelog(mChangelog);
+      const uRaw = await storageGet(USER_KEY, false);
+      const uName = typeof uRaw === "string" && uRaw.trim() ? uRaw.trim() : "";
+      const aRaw = await storageGet(AVATAR_KEY, false);
+      const uAvatar = typeof aRaw === "string" ? aRaw : "";
+      if (cancelled) return;
+      setUserName(uName);
+      setUserAvatar(uAvatar);
+      if (!uName) setShowNamePrompt(true);
+      lastPersonalRef.current = JSON.stringify({ notes: mNotes });
+      lastSharedRef.current = JSON.stringify({ roles: mRoles, taskAssignments: mAsgn, taskTexts: mTxt, taskDueDates: mDue, taskNotes: mTaskNotes, trackerColumns: mCols, raciData: mRaci, examName: mExam, examNameNote: mNote, glossaryTerms: mGloss, roleNames: mRoleNames });
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      const raw = await storageGet(DOCS_KEY, true);
+      if (!raw || raw === lastDocsRef.current) return;
+      const parsed = safeParse(raw, null);
+      if (Array.isArray(parsed)) {
+        lastDocsRef.current = raw;
+        setDocs(parsed);
+      }
+    }, 2e3);
+    return () => clearInterval(iv);
+  }, []);
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      const raw = await storageGet(SHARED_KEY, true);
+      if (!raw || raw === lastSharedRef.current) return;
+      const p = safeParse(raw, null);
+      if (!p) return;
+      lastSharedRef.current = raw;
+      const polledRoles = Array.isArray(p.roles) && p.roles.length ? p.roles : DEFAULT_ROLES.map((r) => ({ ...r }));
+      const defAbbrMap = Object.fromEntries(DEFAULT_ROLES.map((r) => [r.id, r.abbr]));
+      setRoles(polledRoles.map((r) => defAbbrMap[r.id] !== void 0 ? { ...r, abbr: defAbbrMap[r.id] } : r));
+      setTaskAssignments(p.taskAssignments && typeof p.taskAssignments === "object" ? p.taskAssignments : {});
+      setTaskTexts(p.taskTexts && typeof p.taskTexts === "object" ? p.taskTexts : {});
+      setTaskDueDates(p.taskDueDates && typeof p.taskDueDates === "object" ? p.taskDueDates : {});
+      if (p.taskNotes && typeof p.taskNotes === "object") setTaskNotes(p.taskNotes);
+      if (p.trackerColumns && typeof p.trackerColumns === "object") setTrackerColumns(p.trackerColumns);
+      if (Array.isArray(p.raciData) && p.raciData.length) setRaciData(p.raciData);
+      if (typeof p.examName === "string" && p.examName) setExamName(p.examName);
+      if (typeof p.examNameNote === "string") setExamNameNote(p.examNameNote);
+      if (p.roleNames && typeof p.roleNames === "object") setRoleNames(p.roleNames);
+      const clRawPoll = await storageGet(CHANGELOG_KEY, true);
+      const clParsed = safeParse(clRawPoll, null);
+      if (Array.isArray(clParsed)) setChangelog(clParsed);
+      if (Array.isArray(p.glossaryTerms) && p.glossaryTerms.length) setGlossaryTerms(p.glossaryTerms);
+    }, 4e3);
+    return () => clearInterval(iv);
+  }, []);
+  const lastCompletedRef = useRef(null);
+  const localCompletedRef = useRef({});
+  const clearingRef = useRef(false);
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      if (clearingRef.current) return;
+      const raw = await storageGet(COMPLETED_KEY, true);
+      if (!raw || raw === lastCompletedRef.current) return;
+      const parsed = safeParse(raw, null);
+      if (!parsed || typeof parsed !== "object") return;
+      lastCompletedRef.current = raw;
+      setCompleted((prev) => {
+        const local = localCompletedRef.current;
+        const merged = {};
+        const allPhases = /* @__PURE__ */ new Set([...Object.keys(prev), ...Object.keys(parsed)]);
+        allPhases.forEach((ph) => {
+          merged[ph] = {};
+          const prevPh = prev[ph] || {};
+          const parsedPh = parsed[ph] || {};
+          const localPh = local[ph] || {};
+          const allTasks = /* @__PURE__ */ new Set([...Object.keys(prevPh), ...Object.keys(parsedPh)]);
+          allTasks.forEach((tid) => {
+            if (tid in localPh) merged[ph][tid] = localPh[tid];
+            else merged[ph][tid] = !!(prevPh[tid] || parsedPh[tid]);
+          });
+        });
+        return merged;
+      });
+    }, 2e3);
+    return () => clearInterval(iv);
+  }, []);
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify({ notes });
+    if (json === lastPersonalRef.current) return;
+    setSaveStatus("pending");
+    const t = setTimeout(() => {
+      lastPersonalRef.current = json;
+      storageSet(PERSONAL_KEY, json, false).then(() => setSaveStatus("saved"));
+    }, 600);
+    return () => clearTimeout(t);
+  }, [notes, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify({ roles, taskAssignments, taskTexts, taskDueDates, taskNotes, trackerColumns, raciData, examName, examNameNote, glossaryTerms, roleNames });
+    if (json === lastSharedRef.current) return;
+    setSaveStatus("pending");
+    const t = setTimeout(() => {
+      lastSharedRef.current = json;
+      storageSet(SHARED_KEY, json, true).then(() => setSaveStatus("saved"));
+    }, 600);
+    return () => clearTimeout(t);
+  }, [roles, taskAssignments, taskTexts, taskDueDates, taskNotes, trackerColumns, raciData, examName, examNameNote, glossaryTerms, roleNames, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify(panelists);
+    if (json === lastPanelistsRef.current) return;
+    lastPanelistsRef.current = json;
+    storageSet(PANELISTS_KEY, json, true);
+  }, [panelists, ready]);
+  const lastDocsRef = useRef(null);
+  const saveDocs = useCallback((newDocs) => {
+    const json = JSON.stringify(newDocs);
+    lastDocsRef.current = json;
+    storageSet(DOCS_KEY, json, true);
+  }, []);
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify(docs);
+    if (json === lastDocsRef.current) return;
+    lastDocsRef.current = json;
+    storageSet(DOCS_KEY, json, true);
+  }, [docs, ready]);
+  const lastDatesRef = useRef(null);
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify(sessionDates);
+    if (json === lastDatesRef.current) return;
+    lastDatesRef.current = json;
+    storageSet(DATES_KEY, json, true);
+  }, [sessionDates, ready]);
+  useEffect(() => {
+    userNameRef.current = userName;
+    if (ready && userName) storageSet(USER_KEY, userName, false);
+  }, [userName, ready]);
+  useEffect(() => {
+    if (ready) storageSet(AVATAR_KEY, userAvatar, false);
+  }, [userAvatar, ready]);
+  const addLog = useCallback((action, detail) => {
+    const entry = { id: makeId("log"), ts: (/* @__PURE__ */ new Date()).toISOString(), action, detail, user: userNameRef.current || "Unknown" };
+    setChangelog((prev) => {
+      const next = [entry, ...prev].slice(0, 500);
+      storageSet(CHANGELOG_KEY, JSON.stringify(next), true);
+      return next;
+    });
+  }, []);
+  const lastPanelistsRef = useRef(null);
+  const toggleTask = useCallback((phaseKey, taskId) => {
+    setCompleted((prev) => {
+      var _a;
+      const wasDone = !!(prev[phaseKey] && prev[phaseKey][taskId]);
+      const phase = PHASES.find((p) => p.key === phaseKey);
+      const task = (_a = DEFAULT_TASKS[phaseKey]) == null ? void 0 : _a.find((t) => t.id === taskId);
+      addLog(wasDone ? "Task unchecked" : "Task completed", `[${(phase == null ? void 0 : phase.short) || phaseKey}] ${(task == null ? void 0 : task.text) || taskId}`);
+      const next = { ...prev, [phaseKey]: { ...prev[phaseKey], [taskId]: !wasDone } };
+      if (!localCompletedRef.current[phaseKey]) localCompletedRef.current[phaseKey] = {};
+      localCompletedRef.current[phaseKey][taskId] = !wasDone;
+      const json = JSON.stringify(next);
+      lastCompletedRef.current = json;
+      storageSet(COMPLETED_KEY, json, true);
+      return next;
+    });
+  }, [addLog]);
+  const updateNotes = useCallback((pk, v) => {
+    var _a;
+    setNotes((prev) => ({ ...prev, [pk]: v }));
+    if (v && v.trim()) addLog("Notes updated", ((_a = PHASES.find((p) => p.key === pk)) == null ? void 0 : _a.short) || pk);
+  }, [addLog]);
+  const noteLogTimerRef = useRef({});
+  const updateTaskNote = useCallback((taskId, val) => {
+    setTaskNotes((prev) => {
+      const n = { ...prev };
+      if (val) n[taskId] = val;
+      else delete n[taskId];
+      return n;
+    });
+    if (noteLogTimerRef.current[taskId]) clearTimeout(noteLogTimerRef.current[taskId]);
+    if (val && val.trim()) {
+      noteLogTimerRef.current[taskId] = setTimeout(() => {
+        var _a;
+        const isAssignee = taskId.endsWith("__assignee");
+        const realId = isAssignee ? taskId.replace("__assignee", "") : taskId;
+        let taskText = realId;
+        for (const phase of PHASES) {
+          const t = (_a = DEFAULT_TASKS[phase.key]) == null ? void 0 : _a.find((t2) => t2.id === realId);
+          if (t) {
+            taskText = t.text.slice(0, 60);
+            break;
+          }
+        }
+        addLog(isAssignee ? "Assignee set" : "Task note updated", `${taskText}: ${val.trim().slice(0, 60)}`);
+      }, 1500);
+    }
+  }, [addLog]);
+  function generateDocx(data) {
+    const NAVY = "1A1048", PURPLE = "7C3AED", MUTED = "64748B", WHITE = "FFFFFF", GREEN = "2F9E44";
+    const ROLE_COLORS = { pm: "0D7490", program: "475569", psych: "3E63DD", pf: "2F9E44", cf: "E8590C", dqa: "7048E8", rs: "C2255C" };
+    const ROLE_LABELS = { pm: "Program Manager", program: "Program", psych: "Psychometrician", pf: "Process Facilitator", cf: "Content Facilitator", dqa: "Data Quality Analyst", rs: "Research Scientist" };
+    const DATE_LABELS = { kickoff: "Kickoff Meeting", dryrun: "Dry Run Meeting", day1: "Day 1 \u2014 VBSS", day2: "Day 2 \u2014 VBSS", day3: "Day 3 \u2014 VBSS", gradesetting: "Grade Setting Meeting", retro: "Retrospective Meeting" };
+    const RACI_COLORS = { R: "DCF5E3", A: "DCE8FF", C: "FEF0E6", I: "F3F0FC" };
+    const { examName: examName2, exportedAt, sessionDates: sessionDates2 = {}, roleNames: roleNames2 = {}, panelists: panelists2 = [], completed: completed2 = {}, taskTexts: taskTexts2 = {}, taskDueDates: taskDueDates2 = {}, taskNotes: taskNotes2 = {}, raciData: raciData2 = [], glossaryTerms: glossaryTerms2 = [], docs: docs2 = [], changelog: changelog2 = [] } = data;
+    function fmtDate(d) {
+      try {
+        return (/* @__PURE__ */ new Date(d + "T00:00:00")).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+      } catch (e) {
+        return d || "\u2014";
+      }
+    }
+    function fmtTs(ts) {
+      try {
+        return new Date(ts).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
+      } catch (e) {
+        return ts;
+      }
+    }
+    function hex(h) {
+      return { red: parseInt(h.slice(0, 2), 16), green: parseInt(h.slice(2, 4), 16), blue: parseInt(h.slice(4, 6), 16) };
+    }
+    function shading(fill) {
+      return { type: "clear", color: "auto", fill };
+    }
+    function boldRun(text, color = NAVY, size = 20) {
+      return new docx.TextRun({ text, bold: true, color, size, font: "Calibri" });
+    }
+    function run(text, color = "2B2244", size = 20, bold = false) {
+      return new docx.TextRun({ text, color, size, bold, font: "Calibri" });
+    }
+    function para(children2, opts = {}) {
+      return new docx.Paragraph({ children: children2, spacing: { after: 80, ...opts.spacing || {} }, alignment: opts.align || "left", ...opts });
+    }
+    function heading(text, color = PURPLE) {
+      return new docx.Paragraph({ children: [new docx.TextRun({ text: text.toUpperCase(), bold: true, color, size: 22, font: "Calibri" })], spacing: { before: 280, after: 80 }, border: { bottom: { style: "single", size: 4, color: "D0C8F0", space: 4 } } });
+    }
+    function tableCell(children2, bg, bold = false, color = "2B2244", size = 18) {
+      return new docx.TableCell({ children: [new docx.Paragraph({ children: Array.isArray(children2) ? children2 : [new docx.TextRun({ text: String(children2 || ""), bold, color, size, font: "Calibri" })], spacing: { before: 40, after: 40 } })], shading: shading(bg), margins: { top: 60, bottom: 60, left: 100, right: 100 } });
+    }
+    function hdrCell(text, bg) {
+      return tableCell(text, bg, true, WHITE, 17);
+    }
+    function stripeRow(i) {
+      return i % 2 === 0 ? "F7F5FB" : "FFFFFF";
+    }
+    function dataRow(cells) {
+      return new docx.TableRow({ children: cells });
+    }
+    const children = [];
+    children.push(new docx.Paragraph({ children: [new docx.TextRun({ text: examName2 || "CLEP", bold: true, color: NAVY, size: 52, font: "Calibri" })], alignment: "center", spacing: { before: 600, after: 120 } }));
+    children.push(new docx.Paragraph({ children: [run("Video-Based Standard Setting \u2014 Session Record", PURPLE, 26)], alignment: "center", spacing: { after: 80 } }));
+    if (exportedAt) children.push(new docx.Paragraph({ children: [run("Exported: " + fmtTs(exportedAt), MUTED, 18)], alignment: "center", spacing: { after: 400 } }));
+    children.push(new docx.Paragraph({ border: { bottom: { style: "single", size: 6, color: "D0C8F0", space: 4 } }, spacing: { after: 240 } }));
+    const datesArr = Object.entries(sessionDates2).filter(([, v]) => v);
+    if (datesArr.length) {
+      children.push(heading("Session Dates"));
+      children.push(new docx.Table({ width: { size: 100, type: "pct" }, rows: datesArr.map(([k, v], i) => dataRow([tableCell(DATE_LABELS[k] || k, stripeRow(i), true, NAVY), tableCell(fmtDate(v), stripeRow(i))])) }));
+      children.push(para([]));
+    }
+    const membersArr = Object.entries(roleNames2).filter(([, v]) => v);
+    if (membersArr.length) {
+      children.push(heading("Team Members"));
+      children.push(new docx.Table({ width: { size: 100, type: "pct" }, rows: membersArr.map(([k, v], i) => dataRow([tableCell(ROLE_LABELS[k] || k, stripeRow(i), true, NAVY), tableCell(v, stripeRow(i))])) }));
+      children.push(para([]));
+    }
+    if (panelists2.length) {
+      children.push(heading(`Panelists (${panelists2.length})`));
+      const cols = ["name", "table_group", "panelist_id", "panelist_code", "phone"];
+      const hdrs = ["Name", "Table Group", "Panelist ID", "Code", "Phone"];
+      children.push(new docx.Table({ width: { size: 100, type: "pct" }, rows: [
+        dataRow(hdrs.map((h) => hdrCell(h, "4B3880"))),
+        ...panelists2.map((p, i) => dataRow(cols.map((c) => tableCell(String(p[c] || ""), stripeRow(i)))))
+      ] }));
+      children.push(para([]));
+    }
+    children.push(heading("Tasks by Phase"));
+    PHASES.forEach((ph) => {
+      const phaseTasks = DEFAULT_TASKS[ph.key];
+      const phComp = completed2[ph.key] || {};
+      const doneCount = phaseTasks.filter((t) => phComp[t.id]).length;
+      children.push(para([boldRun(`${ph.label}`, NAVY, 22)], { spacing: { before: 200, after: 40 } }));
+      children.push(para([run(`${doneCount} of ${phaseTasks.length} tasks completed`, MUTED, 18)], { spacing: { after: 80 } }));
+      phaseTasks.forEach((t) => {
+        const done = !!phComp[t.id];
+        const text = (taskTexts2[t.id] || t.text).replace(/\\\/'/g, "'");
+        const due = taskDueDates2[t.id];
+        const assignee = (taskNotes2[t.id + "__assignee"] || "").trim();
+        const note = (taskNotes2[t.id] || "").trim();
+        const checkRuns = [new docx.TextRun({ text: done ? "\u2611  " : "\u2610  ", color: done ? GREEN : MUTED, size: 20, font: "Calibri" }), new docx.TextRun({ text, color: done ? GREEN : "2B2244", size: 20, font: "Calibri" })];
+        if (due) checkRuns.push(new docx.TextRun({ text: "  \xB7 Due: " + fmtDate(due), color: MUTED, size: 18, font: "Calibri" }));
+        children.push(new docx.Paragraph({ children: checkRuns, indent: { left: 360 }, spacing: { after: 40 }, bullet: { level: 0 } }));
+        if (assignee) children.push(para([run("RS: " + assignee, MUTED, 17)], { indent: { left: 720 }, spacing: { before: 0, after: 20 } }));
+        if (note) children.push(para([run("Note: " + note, MUTED, 17)], { indent: { left: 720 }, spacing: { before: 0, after: 20 } }));
+      });
+    });
+    if (raciData2.length) {
+      children.push(heading("RACI Matrix"));
+      const rkeys = ["pm", "program", "psych", "pf", "cf", "dqa", "rs"];
+      const rhdrs = ["PM", "Program", "Psych", "PF", "CF", "DQA", "RS"];
+      children.push(new docx.Table({ width: { size: 100, type: "pct" }, rows: [
+        dataRow([hdrCell("Task Category", "4B3880"), ...rkeys.map((k, i) => hdrCell(rhdrs[i], ROLE_COLORS[k] || "4B3880"))]),
+        ...raciData2.map((row, ri) => dataRow([
+          tableCell(row.category, stripeRow(ri), true, NAVY, 17),
+          ...rkeys.map((k) => {
+            var _a;
+            const v = (_a = row.raci) == null ? void 0 : _a[k];
+            return tableCell(v || "", v && RACI_COLORS[v] ? RACI_COLORS[v] : stripeRow(ri), !!v, "2B2244", 20);
+          })
+        ]))
+      ] }));
+      children.push(para([]));
+    }
+    if (docs2.length) {
+      children.push(heading("Documents & Links"));
+      docs2.forEach((d) => {
+        const runs = [boldRun(d.title || "Untitled", NAVY, 20)];
+        if (d.url) runs.push(run("  " + d.url, "0D7490", 18));
+        children.push(new docx.Paragraph({ children: runs, bullet: { level: 0 }, spacing: { after: 60 } }));
+      });
+      children.push(para([]));
+    }
+    if (glossaryTerms2.length) {
+      children.push(heading("Glossary"));
+      [...glossaryTerms2].sort((a, b) => a.term.localeCompare(b.term)).forEach((t) => {
+        children.push(para([boldRun(t.term + ": ", NAVY, 20), run(t.def, "2B2244", 20)], { spacing: { after: 80 } }));
+      });
+      children.push(para([]));
+    }
+    if (changelog2.length) {
+      children.push(heading(`Change Log (${changelog2.length} entries)`));
+      const clRows = changelog2.slice(0, 300).map((e, i) => dataRow([
+        tableCell(fmtTs(e.ts || ""), stripeRow(i), false, MUTED, 16),
+        tableCell(e.action || "", stripeRow(i), true, "2B2244", 17),
+        tableCell((e.detail || "").slice(0, 80), stripeRow(i), false, MUTED, 16),
+        tableCell(e.user || "", stripeRow(i), false, "2B2244", 16)
+      ]));
+      children.push(new docx.Table({ width: { size: 100, type: "pct" }, rows: [
+        dataRow(["Timestamp", "Action", "Detail", "By"].map((h) => hdrCell(h, "4B3880"))),
+        ...clRows
+      ] }));
+    }
+    const doc = new docx.Document({ sections: [{ properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1440, bottom: 1440, left: 1584, right: 1584 } } }, children }] });
+    docx.Packer.toBlob(doc).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `CLEP_VBSS_Record_${(examName2 || "Session").replace(/\\s+/g, "_")}_${stamp}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }).catch((err) => {
+      console.error("docx generation failed:", err);
+    });
+  }
+  function handleExportData() {
+    addLog("App data exported", `${examName || "CLEP"} session record`);
+    const data = {
+      exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      examName,
+      examNameNote,
+      sessionDates,
+      roleNames,
+      panelists,
+      taskAssignments,
+      taskTexts,
+      taskDueDates,
+      taskNotes,
+      completed,
+      notes,
+      raciData,
+      glossaryTerms,
+      docs,
+      changelog
+    };
+    const json = JSON.stringify(data, null, 2);
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const filename = `CLEP_VBSS_Record_${(examName || "Session").replace(/\s+/g, "_")}_${stamp}.json`;
+    try {
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const a = document.createElement("a");
+      a.href = "data:application/json;charset=utf-8," + encodeURIComponent(json);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+    return;
+  }
+  function handleClearData() {
+    addLog("App data cleared", "All session data reset for new session");
+    const def = defaultShared();
+    setPanelists([]);
+    setRoles(def.roles);
+    setTaskAssignments(def.taskAssignments);
+    setTaskTexts({});
+    setTaskDueDates({});
+    setRaciData(DEFAULT_RACI.map((r) => ({ ...r, raci: { ...r.raci } })));
+    setExamName("CLEP");
+    setExamNameNote("");
+    setDocs([]);
+    lastDocsRef.current = "[]";
+    storageSet(DOCS_KEY, "[]", true);
+    const emptyDates = { kickoff: "", dryrun: "", day1: "", day2: "", day3: "", gradesetting: "", retro: "" };
+    setSessionDates(emptyDates);
+    lastDatesRef.current = JSON.stringify(emptyDates);
+    storageSet(DATES_KEY, JSON.stringify(emptyDates), true);
+    setGlossaryTerms(DEFAULT_GLOSSARY_TERMS.map((t) => ({ ...t })));
+    setRoleNames({});
+    setTaskNotes({});
+    setTrackerColumns(Object.fromEntries(ALL_TRACKER_COLS.map((c) => [c.key, true])));
+    const emptyComp = {};
+    PHASES.forEach((p) => {
+      emptyComp[p.key] = {};
+    });
+    setCompleted(emptyComp);
+    lastCompletedRef.current = JSON.stringify(emptyComp);
+    localCompletedRef.current = {};
+    clearingRef.current = true;
+    storageSet(COMPLETED_KEY, JSON.stringify(emptyComp), true).then(() => {
+      setTimeout(() => {
+        clearingRef.current = false;
+      }, 5e3);
+    });
+    lastPanelistsRef.current = "[]";
+    storageSet(PANELISTS_KEY, "[]", true);
+    setGlobalRoleFilter([]);
+    const defP = defaultPersonal();
+    setNotes(defP.notes);
+  }
+  const globalRsNames = useMemo(() => {
+    const names = /* @__PURE__ */ new Set();
+    PHASES.forEach((p) => {
+      DEFAULT_TASKS[p.key].forEach((t) => {
+        if (!t.hasAssignee) return;
+        const val = taskNotes && taskNotes[t.id + "__assignee"] || "";
+        if (!val.trim()) return;
+        val.split(/[,;]/).forEach((n) => {
+          const trimmed = n.trim();
+          if (trimmed) names.add(trimmed);
+        });
+      });
+    });
+    return Array.from(names).sort().map((name) => ({ name, key: "rs__" + name.toLowerCase().replace(/\s+/g, "_") }));
+  }, [taskNotes]);
+  const updateDueDate = useCallback((taskId, v) => {
+    var _a;
+    setTaskDueDates((prev) => {
+      const n = { ...prev };
+      if (v) n[taskId] = v;
+      else delete n[taskId];
+      return n;
+    });
+    if (v) {
+      let taskText = taskId;
+      for (const phase of PHASES) {
+        const t = (_a = DEFAULT_TASKS[phase.key]) == null ? void 0 : _a.find((t2) => t2.id === taskId);
+        if (t) {
+          taskText = t.text;
+          break;
+        }
+      }
+      addLog("Due date set", `${taskText.slice(0, 60)} \u2192 ${v}`);
+    }
+  }, [addLog]);
+  const stats = useMemo(() => {
+    const s = {};
+    PHASES.forEach((p) => {
+      const total = DEFAULT_TASKS[p.key].length;
+      const done = DEFAULT_TASKS[p.key].filter((t) => completed[p.key] && completed[p.key][t.id]).length;
+      s[p.key] = { done, total };
+    });
+    return s;
+  }, [completed]);
+  const activePhase = PHASES.find((p) => p.key === page);
+  let content = null;
+  if (page === "dashboard") content = /* @__PURE__ */ React.createElement(Dashboard, { stats, setPage, panelistCount: panelists.length, roles, examName, sessionDates });
+  else if (activePhase) content = /* @__PURE__ */ React.createElement(TaskPhasePage, { phase: activePhase, roles, taskAssignments, taskTexts, taskDueDates, onDueDateChange: updateDueDate, examName, completedMap: completed[activePhase.key] || {}, notes: notes[activePhase.key] || "", onToggleTask: toggleTask, onNotesChange: updateNotes, sessionDates, taskNotes, onTaskNoteChange: updateTaskNote, roleFilter: globalRoleFilter, setRoleFilter: setGlobalRoleFilter, rsNames: globalRsNames });
+  else if (page === "tracker") content = /* @__PURE__ */ React.createElement(Tracker, { panelists, setPanelists, trackerColumns, setTrackerColumns, addLog });
+  else if (page === "docs") content = /* @__PURE__ */ React.createElement(DocsPage, { docs, setDocs, saveDocs, addLog });
+  else if (page === "processflow") content = /* @__PURE__ */ React.createElement(ProcessFlowPage, { setPage, sessionDates, stats });
+  else if (page === "raci") content = /* @__PURE__ */ React.createElement(RaciMatrix, { raciData, setRaciData, roles, addLog });
+  else if (page === "glossary") content = /* @__PURE__ */ React.createElement(Glossary, { glossaryTerms, setGlossaryTerms, addLog });
+  else if (page === "admin") content = /* @__PURE__ */ React.createElement(TaskEditor, { examName, taskTexts, setTaskTexts, taskAssignments, setTaskAssignments, taskDueDates, setTaskDueDates, roles, setRoles, setExamName, roleNames, setRoleNames, addLog });
+  else if (page === "settings") content = /* @__PURE__ */ React.createElement(SettingsPage, { examName, setExamName, examNameNote, setExamNameNote, sessionDates, setSessionDates, onExportData: handleExportData, onClearData: handleClearData, addLog });
+  else if (page === "changelog") content = /* @__PURE__ */ React.createElement(ChangeLog, { changelog, setChangelog, examName });
+  return /* @__PURE__ */ React.createElement("div", { className: "app" }, /* @__PURE__ */ React.createElement("style", null, STYLES), showNamePrompt && /* @__PURE__ */ React.createElement(UserNamePrompt, { onSave: (name, avatar) => {
+    setUserName(name);
+    if (avatar !== void 0) setUserAvatar(avatar);
+    setShowNamePrompt(false);
+    storageSet(USER_KEY, name, false);
+    if (avatar !== void 0) storageSet(AVATAR_KEY, avatar, false);
+  } }), /* @__PURE__ */ React.createElement(TopBar, { page, userName, userAvatar, onChangeName: () => setShowNamePrompt(true) }), /* @__PURE__ */ React.createElement("div", { className: "body-row" }, /* @__PURE__ */ React.createElement(Sidebar, { page, setPage, stats, examName, saveStatus }), /* @__PURE__ */ React.createElement("main", { className: "main" }, !ready ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading your session\u2026") : content)));
+}
+
+
+    var root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  } catch(e) {
+    console.error('App error:', e);
+    document.getElementById('root').innerHTML =
+      '<div style="padding:40px;color:#B91C1C;font-family:monospace;white-space:pre-wrap">' +
+      '<strong>App failed to start:</strong>\n\n' + e.message + '\n\n' + (e.stack||'') + '</div>';
+    document.getElementById('root').style.display = '';
+  }
+}
+</script>
+</body>
+</html>
